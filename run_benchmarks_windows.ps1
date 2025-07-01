@@ -127,7 +127,10 @@ if ($nvidiaSmi) {
 
 Write-Host ""
 Write-Host "Installing PyTorch from: $torchIndex"
+# Suppress PowerShell's stderr warnings for this command
+$ErrorActionPreference = "SilentlyContinue"
 $output = & uv pip install torch torchvision torchaudio --index-url $torchIndex 2>&1
+$ErrorActionPreference = "Continue"
 $output | Out-String | Tee-Object -Append $OutputFile
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
@@ -143,10 +146,14 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Step 5: Installing remaining dependencies..."
 
+$ErrorActionPreference = "SilentlyContinue"
 $output = & uv pip install numpy psutil tabulate nvidia-ml-py3 pytest pytest-asyncio pyyaml 2>&1
+$ErrorActionPreference = "Continue"
 $output | Out-String | Tee-Object -Append $OutputFile
 
+$ErrorActionPreference = "SilentlyContinue"
 $output = & uv pip install -e . 2>&1
+$ErrorActionPreference = "Continue"
 $output | Out-String | Tee-Object -Append $OutputFile
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Failed to install pyisolate" -ForegroundColor Red
@@ -216,10 +223,8 @@ Write-Host "Step 8: Running memory benchmarks..."
 Write-Host "Running memory_benchmark.py (this may take several minutes)..."
 Write-Host "NOTE: This test intentionally pushes VRAM limits to find maximum capacity"
 
-# Calculate timeout time
-$timeoutTime = (Get-Date).AddMinutes(15).ToString("h:mm tt")
 Write-Host "Starting memory benchmark at $(Get-Date -Format 'h:mm:ss tt')..."
-Write-Host "NOTE: Press Ctrl+C if nothing has changed in at least 15 minutes (at $timeoutTime)" -ForegroundColor Yellow
+Write-Host "NOTE: If nothing has changed after 90 minutes, press Ctrl+C" -ForegroundColor Yellow
 Write-Host "The test intentionally pushes VRAM limits and may appear frozen when it hits limits."
 
 # Run memory benchmark

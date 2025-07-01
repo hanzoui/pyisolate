@@ -307,7 +307,11 @@ echo "Step 8: Running memory benchmarks..."
 } >> "../$OUTPUT_FILE"
 
 echo "Running memory_benchmark.py (this may take several minutes)..."
-python memory_benchmark.py --counts 1,2,5,10 --test-both-modes 2>&1 | tee -a "../$OUTPUT_FILE" || {
+echo "Starting at: $(date)"
+echo "NOTE: If nothing has changed after 90 minutes, press Ctrl+C"
+echo "The test intentionally pushes VRAM limits and may appear frozen when it hits limits."
+echo ""
+python memory_benchmark.py --counts 1,2,5,10 2>&1 | tee -a "../$OUTPUT_FILE" || {
     echo "WARNING: Memory benchmark failed or was interrupted"
     echo "[$(date)] WARNING: Memory benchmark failed" >> "../$OUTPUT_FILE"
     echo "Exit code: $?" >> "../$OUTPUT_FILE"

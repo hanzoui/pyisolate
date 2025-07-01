@@ -145,3 +145,9 @@ cython_debug/
 
 # macOS
 .DS_Store
+
+# Test temporary directories
+.test_temps/
+
+# Benchmark virtual environment
+.benchmark_venv/

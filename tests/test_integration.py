@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, TypedDict, cast
 
@@ -45,9 +46,18 @@ class IntegrationTestBase:
 
     async def setup_test_environment(self, test_name: str) -> Path:
         """Set up a temporary test environment."""
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.test_root = Path(self.temp_dir.name) / test_name
+        # Create test directories within the project folder instead of system temp
+        project_root = Path(__file__).parent.parent
+        test_temps_dir = project_root / ".test_temps"
+        test_temps_dir.mkdir(exist_ok=True)
+
+        # Add timestamp to avoid conflicts
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.test_root = test_temps_dir / f"{test_name}_{timestamp}"
         self.test_root.mkdir(parents=True, exist_ok=True)
+
+        # Store the path for cleanup
+        self.temp_dir = None  # No longer using TemporaryDirectory
 
         # Create venv root directory
         venv_root = self.test_root / "extension-venvs"
@@ -203,9 +213,14 @@ def example_entrypoint() -> ExampleExtension:
             except Exception as e:
                 logging.warning(f"Error stopping extensions: {e}")
 
-        # Clean up temp directory
-        if self.temp_dir:
-            self.temp_dir.cleanup()
+        # Clean up test directory manually since we're not using TemporaryDirectory
+        if self.test_root and self.test_root.exists():
+            import shutil
+
+            try:
+                shutil.rmtree(self.test_root)
+            except Exception as e:
+                logging.warning(f"Error removing test directory {self.test_root}: {e}")
 
 
 @pytest.mark.asyncio
