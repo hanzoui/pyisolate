@@ -284,8 +284,13 @@ echo Output is being saved to the results file...
 
 REM Run benchmark directly without start command
 echo Starting performance benchmark...
-python benchmark.py --quick > "%TEMP_OUTPUT%" 2>&1
+python benchmark.py --quick > "%TEMP_OUTPUT%" 2> "%ERROR_LOG%"
 set BENCHMARK_RESULT=!ERRORLEVEL!
+
+REM Combine stdout and stderr
+if exist "%ERROR_LOG%" (
+    type "%ERROR_LOG%" >> "%TEMP_OUTPUT%"
+)
 
 REM Display and save the output
 if exist "%TEMP_OUTPUT%" (
@@ -349,11 +354,27 @@ echo ================================================================ >> "..\%OU
 echo Starting at: !time! >> "..\%OUTPUT_FILE%"
 echo. >> "..\%OUTPUT_FILE%"
 
-REM Now run the actual benchmark - without output redirection first to see if that helps
-echo Running: python memory_benchmark.py --counts 1,2,5,10,20,50
+REM Now run the actual benchmark and capture output
+echo Running: python memory_benchmark.py --counts 1,2,5,10,25,50,100
 echo.
-python memory_benchmark.py --counts 1,2,5,10,20,50
+
+REM Run the benchmark and capture output to a temporary file
+python memory_benchmark.py --counts 1,2,5,10,25,50,100 > memory_output.tmp 2> memory_errors.tmp
 set MEMORY_RESULT=!ERRORLEVEL!
+
+REM Combine stdout and stderr
+if exist memory_errors.tmp (
+    type memory_errors.tmp >> memory_output.tmp
+    del memory_errors.tmp
+)
+
+REM Display the output to console
+if exist memory_output.tmp (
+    type memory_output.tmp
+    REM Also append to the main output file
+    type memory_output.tmp >> "..\%OUTPUT_FILE%"
+    del memory_output.tmp
+)
 
 if %MEMORY_RESULT% NEQ 0 (
     echo.
@@ -361,7 +382,7 @@ if %MEMORY_RESULT% NEQ 0 (
     echo [%date% %time%] WARNING: Memory benchmark failed >> "..\%OUTPUT_FILE%"
     echo Error code: %MEMORY_RESULT% >> "..\%OUTPUT_FILE%"
     echo.
-    echo NOTE: Output was displayed in real-time above.
+    echo NOTE: Check the output above for details.
     echo If the test appeared stuck, it may be due to Windows CUDA multiprocessing issues.
 )
 
