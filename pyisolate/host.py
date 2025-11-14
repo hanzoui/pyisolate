@@ -128,13 +128,35 @@ class ExtensionManager(Generic[T]):
             extension and clean up resources, call the `stop()` method on the
             returned proxy object.
         """
-        extension = Extension(
-            module_path=config["module_path"],
-            extension_type=self.extension_type,
-            config=config,
-            venv_root_path=self.config["venv_root_path"],
+        name = config["name"]
+        if name in self.extensions:
+            raise ValueError(f"Extension '{name}' is already loaded")
+
+        logger.info(
+            "� [PyIsolate][ExtensionManager] Loading extension name=%s module_path=%s isolated=%s share_torch=%s deps=%s",
+            name,
+            config.get("module_path"),
+            config.get("isolated", False),
+            config.get("share_torch", False),
+            config.get("dependencies", []),
         )
-        self.extensions[config["name"]] = extension
+
+        try:
+            extension = Extension(
+                module_path=config["module_path"],
+                extension_type=self.extension_type,
+                config=config,
+                venv_root_path=self.config["venv_root_path"],
+            )
+        except Exception as exc:
+            logger.error(
+                "� [PyIsolate][ExtensionManager] Failed to initialize extension %s: %s",
+                name,
+                exc,
+            )
+            raise
+
+        self.extensions[name] = extension
         proxy = extension.get_proxy()
 
         class HostExtension(ExtensionLocal):
@@ -160,6 +182,11 @@ class ExtensionManager(Generic[T]):
 
         host_extension = HostExtension(extension.rpc, proxy, extension)
         host_extension._initialize_rpc(extension.rpc)
+        logger.info(
+            "� [PyIsolate][ExtensionManager] Extension %s ready (venv=%s)",
+            name,
+            extension.venv_path,
+        )
 
         return cast(T, host_extension)
 
@@ -176,9 +203,8 @@ class ExtensionManager(Generic[T]):
             raise KeyError(f"No extension named '{name}' is loaded")
 
         try:
-            logger.debug(f"Stopping extension: {name}")
+            logger.info("� [PyIsolate][ExtensionManager] Stopping extension %s", name)
             self.extensions[name].stop()
-            # Remove from our tracking after successful stop
             del self.extensions[name]
         except Exception as e:
             logger.error(f"Error stopping extension {name}: {e}")
@@ -192,9 +218,9 @@ class ExtensionManager(Generic[T]):
         to call this method before shutting down the application to ensure clean
         termination of all extension processes.
         """
-        for name, extension in self.extensions.items():
+        for name, extension in list(self.extensions.items()):
             try:
-                logger.debug(f"Stopping extension: {name}")
+                logger.info("� [PyIsolate][ExtensionManager] Stopping extension %s", name)
                 extension.stop()
             except Exception as e:
                 logger.error(f"Error stopping extension {name}: {e}")
