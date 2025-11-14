@@ -46,6 +46,13 @@ if os.environ.get("PYISOLATE_CHILD") == "1":
                 comfy_root=comfy_root
             )
             
+            # Diagnostic prints (logging not configured yet during spawn)
+            print(f"🔒 [PyIsolate][PathUnification] sys.path unification completed", file=sys.stderr)
+            print(f"🔒 [PyIsolate][PathUnification] comfy_root={comfy_root}", file=sys.stderr)
+            print(f"🔒 [PyIsolate][PathUnification] ComfyUI in sys.path: {comfy_root in unified_path if comfy_root else 'N/A'}", file=sys.stderr)
+            print(f"🔒 [PyIsolate][PathUnification] First 5 unified paths: {unified_path[:5]}", file=sys.stderr)
+            print(f"🔒 [PyIsolate][PathUnification] Total unified paths: {len(unified_path)}", file=sys.stderr)
+            
             # Replace sys.path
             sys.path.clear()
             sys.path.extend(unified_path)

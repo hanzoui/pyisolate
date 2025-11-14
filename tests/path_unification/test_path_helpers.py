@@ -118,6 +118,38 @@ class TestBuildChildSysPath:
         assert result.count(comfy_root) == 1
         assert result[0] == comfy_root
     
+    def test_removes_comfy_subdirectories_when_root_specified(self):
+        """Subdirectories of comfy_root should be filtered to avoid shadowing."""
+        comfy_root = "/home/johnj/ComfyUI"
+        host = [f"{comfy_root}/comfy", f"{comfy_root}/app", "/host/lib"]
+        extras = ["/venv/lib"]
+        
+        result = build_child_sys_path(host, extras, comfy_root=comfy_root)
+        
+        # ComfyUI root should be first
+        assert result[0] == comfy_root
+        # Subdirectories should be removed
+        assert f"{comfy_root}/comfy" not in result
+        assert f"{comfy_root}/app" not in result
+        # Other paths should remain
+        assert "/host/lib" in result
+    
+    def test_preserves_venv_site_packages_under_comfy_root(self):
+        """ComfyUI .venv site-packages should NOT be filtered out."""
+        comfy_root = "/home/johnj/ComfyUI"
+        venv_site = f"{comfy_root}/.venv/lib/python3.12/site-packages"
+        host = [f"{comfy_root}/comfy", venv_site, "/host/lib"]
+        extras = []
+        
+        result = build_child_sys_path(host, extras, comfy_root=comfy_root)
+        
+        # ComfyUI root should be first
+        assert result[0] == comfy_root
+        # .venv site-packages MUST be preserved
+        assert venv_site in result
+        # comfy subdir should be removed
+        assert f"{comfy_root}/comfy" not in result
+    
     def test_appends_extra_paths(self):
         """Extra paths (isolated venv) should be appended after host paths."""
         host = ["/host/lib"]

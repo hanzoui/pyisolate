@@ -74,8 +74,26 @@ def build_child_sys_path(
     ordered_host = list(host_paths)
     if comfy_root:
         comfy_norm = _norm(comfy_root)
-        if all(_norm(p) != comfy_norm for p in ordered_host):
-            ordered_host = [comfy_root] + ordered_host
+        # Remove immediate ComfyUI code subdirectories that would shadow imports
+        # e.g., remove /path/to/ComfyUI/comfy, /path/to/ComfyUI/app
+        # but KEEP /path/to/ComfyUI/.venv/... (site-packages needed!)
+        code_subdirs = {
+            os.path.join(comfy_norm, "comfy"),
+            os.path.join(comfy_norm, "app"),
+            os.path.join(comfy_norm, "comfy_execution"),
+            os.path.join(comfy_norm, "comfy_extras"),
+        }
+        filtered_host = []
+        for p in ordered_host:
+            p_norm = _norm(p)
+            # Skip if this is comfy_root itself (we'll add it explicitly)
+            if p_norm == comfy_norm:
+                continue
+            # Skip if this is a known code subdirectory
+            if p_norm in code_subdirs:
+                continue
+            filtered_host.append(p)
+        ordered_host = [comfy_root] + filtered_host
 
     def add_path(path: str) -> None:
         if not path:
