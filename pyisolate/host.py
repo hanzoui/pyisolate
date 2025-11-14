@@ -133,7 +133,7 @@ class ExtensionManager(Generic[T]):
             raise ValueError(f"Extension '{name}' is already loaded")
 
         logger.info(
-            "� [PyIsolate][ExtensionManager] Loading extension name=%s module_path=%s isolated=%s share_torch=%s deps=%s",
+            "📚 [PyIsolate][ExtensionManager] Loading extension name=%s module_path=%s isolated=%s share_torch=%s deps=%s",
             name,
             config.get("module_path"),
             config.get("isolated", False),
@@ -150,7 +150,7 @@ class ExtensionManager(Generic[T]):
             )
         except Exception as exc:
             logger.error(
-                "� [PyIsolate][ExtensionManager] Failed to initialize extension %s: %s",
+                "📚 [PyIsolate][ExtensionManager] Failed to initialize extension %s: %s",
                 name,
                 exc,
             )
@@ -183,7 +183,7 @@ class ExtensionManager(Generic[T]):
         host_extension = HostExtension(extension.rpc, proxy, extension)
         host_extension._initialize_rpc(extension.rpc)
         logger.info(
-            "� [PyIsolate][ExtensionManager] Extension %s ready (venv=%s)",
+            "📚 [PyIsolate][ExtensionManager] Extension %s ready (venv=%s)",
             name,
             extension.venv_path,
         )
@@ -203,7 +203,7 @@ class ExtensionManager(Generic[T]):
             raise KeyError(f"No extension named '{name}' is loaded")
 
         try:
-            logger.info("� [PyIsolate][ExtensionManager] Stopping extension %s", name)
+            logger.info("📚 [PyIsolate][ExtensionManager] Stopping extension %s", name)
             self.extensions[name].stop()
             del self.extensions[name]
         except Exception as e:
@@ -220,7 +220,7 @@ class ExtensionManager(Generic[T]):
         """
         for name, extension in list(self.extensions.items()):
             try:
-                logger.info("� [PyIsolate][ExtensionManager] Stopping extension %s", name)
+                logger.info("📚 [PyIsolate][ExtensionManager] Stopping extension %s", name)
                 extension.stop()
             except Exception as e:
                 logger.error(f"Error stopping extension {name}: {e}")

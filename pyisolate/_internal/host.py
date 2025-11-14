@@ -192,7 +192,7 @@ class Extension(Generic[T]):
         # Validate all dependencies
         for dep in config["dependencies"]:
             validate_dependency(dep)
-            logger.debug("� [PyIsolate][Extension] Dependency validated name=%s dep=%s", self.name, dep)
+            logger.debug("📚 [PyIsolate][Extension] Dependency validated name=%s dep=%s", self.name, dep)
 
         # Use Path for safer path operations with normalized name
         venv_root = Path(venv_root_path).resolve()
@@ -209,17 +209,17 @@ class Extension(Generic[T]):
             import torch.multiprocessing
 
             self.mp = torch.multiprocessing
-            logger.info("� [PyIsolate][Extension] Using torch.multiprocessing for %s", self.name)
+            logger.info("📚 [PyIsolate][Extension] Using torch.multiprocessing for %s", self.name)
         else:
             import multiprocessing
 
             self.mp = multiprocessing
-            logger.info("� [PyIsolate][Extension] Using multiprocessing for %s", self.name)
+            logger.info("📚 [PyIsolate][Extension] Using multiprocessing for %s", self.name)
 
         start_method = self.mp.get_start_method(allow_none=True)
         if start_method is None:
             self.mp.set_start_method("spawn")
-            logger.info("� [PyIsolate][Extension] Start method set to spawn for %s", self.name)
+            logger.info("📚 [PyIsolate][Extension] Start method set to spawn for %s", self.name)
         elif start_method != "spawn":
             raise RuntimeError(
                 f"Invalid start method {start_method} for pyisolate. "
@@ -229,7 +229,7 @@ class Extension(Generic[T]):
         self.from_extension = self.mp.Queue()
         self.extension_proxy = None
         logger.info(
-            "� [PyIsolate][Extension] Preparing extension name=%s normalized=%s venv=%s module_path=%s",
+            "📚 [PyIsolate][Extension] Preparing extension name=%s normalized=%s venv=%s module_path=%s",
             self.name,
             self.normalized_name,
             self.venv_path,
@@ -238,7 +238,7 @@ class Extension(Generic[T]):
         try:
             self.proc = self.__launch()
         except Exception as exc:
-            logger.error("� [PyIsolate][Extension] Launch failed for %s: %s", self.name, exc)
+            logger.error("📚 [PyIsolate][Extension] Launch failed for %s: %s", self.name, exc)
             raise
         self.rpc = AsyncRPC(recv_queue=self.from_extension, send_queue=self.to_extension)
         for api in config["apis"]:
@@ -254,7 +254,7 @@ class Extension(Generic[T]):
     def stop(self) -> None:
         """Stop the extension process and clean up resources."""
         try:
-            logger.info("� [PyIsolate][Extension] Stopping extension %s", self.name)
+            logger.info("📚 [PyIsolate][Extension] Stopping extension %s", self.name)
             # Terminate the process first to prevent further issues
             if hasattr(self, "proc") and self.proc.is_alive():
                 self.proc.terminate()
@@ -276,6 +276,7 @@ class Extension(Generic[T]):
 
         except Exception as e:
             logger.error(f"Error stopping extension {self.name}: {e}")
+            raise
 
     def __launch(self):
         """
@@ -290,7 +291,7 @@ class Extension(Generic[T]):
         # Set the Python executable from the virtual environment
         executable = sys._base_executable if os.name == "nt" else str(self.venv_path / "bin" / "python")
         logger.info(
-            "� [PyIsolate][Extension] Launching %s via executable=%s share_torch=%s",
+            "📚 [PyIsolate][Extension] Launching %s via executable=%s share_torch=%s",
             self.name,
             executable,
             self.config["share_torch"],
@@ -300,7 +301,7 @@ class Extension(Generic[T]):
         snapshot_file = Path(tempfile.gettempdir()) / f"pyisolate_snapshot_{self.name}.json"
         snapshot = serialize_host_snapshot(output_path=str(snapshot_file))
         logger.debug(
-            "� [PyIsolate][Extension] Host snapshot saved to %s for %s",
+            "📚 [PyIsolate][Extension] Host snapshot saved to %s for %s",
             snapshot_file,
             self.name,
         )
@@ -343,7 +344,7 @@ class Extension(Generic[T]):
 
         if not self.venv_path.exists():
             logger.info(
-                "� [PyIsolate][Venv] Creating virtual environment name=%s path=%s",
+                "📚 [PyIsolate][Venv] Creating virtual environment name=%s path=%s",
                 self.name,
                 self.venv_path,
             )
@@ -411,7 +412,7 @@ class Extension(Generic[T]):
         # Install extension dependencies from config
         if self.config["dependencies"] or self.config["share_torch"]:
             logger.info(
-                "� [PyIsolate][Deps] Installing dependencies for %s deps=%s share_torch=%s",
+                "📚 [PyIsolate][Deps] Installing dependencies for %s deps=%s share_torch=%s",
                 self.name,
                 self.config["dependencies"],
                 self.config["share_torch"],
@@ -439,20 +440,20 @@ class Extension(Generic[T]):
                     and ("Installed" in result.stderr or "Uninstalled" in result.stderr)
                 ):
                     logger.info(
-                        "� [PyIsolate][Deps] uv reported changes for %s:\n%s",
+                        "📚 [PyIsolate][Deps] uv reported changes for %s:\n%s",
                         self.name,
                         result.stderr.strip(),
                     )
             except subprocess.CalledProcessError as e:
                 detail = e.stderr.strip() if e.stderr else "(no stderr)"
                 msg = (
-                    f"� [PyIsolate][Deps] uv install failed for {self.name} "
+                    f"📚 [PyIsolate][Deps] uv install failed for {self.name} "
                     f"returncode={e.returncode} command={' '.join(e.cmd)} stderr={detail}"
                 )
                 logger.error(msg)
                 raise RuntimeError(msg) from e
         else:
-            logger.info("� [PyIsolate][Deps] No dependencies to install for %s", self.name)
+            logger.info("📚 [PyIsolate][Deps] No dependencies to install for %s", self.name)
 
     def join(self):
         """

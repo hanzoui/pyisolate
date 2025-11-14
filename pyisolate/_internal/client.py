@@ -47,23 +47,24 @@ if os.environ.get("PYISOLATE_CHILD") == "1":
             )
             
             # Diagnostic prints (logging not configured yet during spawn)
-            print(f"🔒 [PyIsolate][PathUnification] sys.path unification completed", file=sys.stderr)
-            print(f"🔒 [PyIsolate][PathUnification] comfy_root={comfy_root}", file=sys.stderr)
-            print(f"🔒 [PyIsolate][PathUnification] ComfyUI in sys.path: {comfy_root in unified_path if comfy_root else 'N/A'}", file=sys.stderr)
-            print(f"🔒 [PyIsolate][PathUnification] First 5 unified paths: {unified_path[:5]}", file=sys.stderr)
-            print(f"🔒 [PyIsolate][PathUnification] Total unified paths: {len(unified_path)}", file=sys.stderr)
+            print(f"📚 [PyIsolate][PathUnification] sys.path unification completed", file=sys.stderr)
+            print(f"📚 [PyIsolate][PathUnification] comfy_root={comfy_root}", file=sys.stderr)
+            print(f"📚 [PyIsolate][PathUnification] ComfyUI in sys.path: {comfy_root in unified_path if comfy_root else 'N/A'}", file=sys.stderr)
+            print(f"📚 [PyIsolate][PathUnification] First 5 unified paths: {unified_path[:5]}", file=sys.stderr)
+            print(f"📚 [PyIsolate][PathUnification] Total unified paths: {len(unified_path)}", file=sys.stderr)
             
             # Replace sys.path
             sys.path.clear()
             sys.path.extend(unified_path)
             
             logger.info(
-                "🔒 [PyIsolate][Client] Applied host snapshot on module import (comfy_root=%s, paths=%d)",
+                "📚 [PyIsolate][Client] Applied host snapshot on module import (comfy_root=%s, paths=%d)",
                 comfy_root,
                 len(unified_path)
             )
         except Exception as e:
-            logger.error("🔒 [PyIsolate][Client] Failed to apply host snapshot on import: %s", e)
+            logger.error("📚 [PyIsolate][Client] Failed to apply host snapshot on import: %s", e)
+            raise
 
 
 async def async_entrypoint(
@@ -77,7 +78,7 @@ async def async_entrypoint(
     Asynchronous entrypoint for the module.
     """
     logger.info(
-        "🔒 [PyIsolate][Client] Starting async_entrypoint module_path=%s executable=%s share_torch=%s",
+        "📚 [PyIsolate][Client] Starting async_entrypoint module_path=%s executable=%s share_torch=%s",
         module_path,
         sys.executable,
         config["share_torch"],
@@ -96,7 +97,7 @@ async def async_entrypoint(
 
     if not os.path.isdir(module_path):
         msg = f"Module path {module_path} is not a directory."
-        logger.error("� [PyIsolate][Client] %s", msg)
+        logger.error("�📚 [PyIsolate][Client] %s", msg)
         raise ValueError(msg)
 
     with context:
@@ -124,7 +125,7 @@ async def async_entrypoint(
             except Exception as e:
                 import traceback
 
-                logger.error("� [PyIsolate][Client] on_module_loaded failed for %s: %s", module_path, e)
+                logger.error("�📚 [PyIsolate][Client] on_module_loaded failed for %s: %s", module_path, e)
                 logger.error("Exception details:\n%s", traceback.format_exc())
                 await rpc.stop()
                 raise
@@ -134,7 +135,7 @@ async def async_entrypoint(
         except Exception as e:
             import traceback
 
-            logger.error("� [PyIsolate][Client] Error loading extension from %s: %s", module_path, e)
+            logger.error("�📚 [PyIsolate][Client] Error loading extension from %s: %s", module_path, e)
             logger.error("Exception details:\n%s", traceback.format_exc())
             raise
 
