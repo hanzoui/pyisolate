@@ -399,6 +399,13 @@ class Extension(Generic[T]):
                     "--extra-index-url",
                     f"https://download.pytorch.org/whl/cu{cuda_version.replace('.', '')}",
                 ]
+            
+            # For dev/nightly builds: allow fallback to other indexes
+            # Without this, exact dev versions like '2.9.0.dev20250901+cu129' fail
+            if "dev" in torch_version or "+" in torch_version:
+                uv_common_args.append("--index-strategy")
+                uv_common_args.append("unsafe-best-match")
+            
             uv_args.append(f"torch=={torch_version}")
 
         # Install extension dependencies from config
