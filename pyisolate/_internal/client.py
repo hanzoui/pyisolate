@@ -97,7 +97,7 @@ async def async_entrypoint(
 
     if not os.path.isdir(module_path):
         msg = f"Module path {module_path} is not a directory."
-        logger.error("�📚 [PyIsolate][Client] %s", msg)
+        logger.error("📚 [PyIsolate][Client] %s", msg)
         raise ValueError(msg)
 
     with context:
@@ -125,7 +125,7 @@ async def async_entrypoint(
             except Exception as e:
                 import traceback
 
-                logger.error("�📚 [PyIsolate][Client] on_module_loaded failed for %s: %s", module_path, e)
+                logger.error("📚 [PyIsolate][Client] on_module_loaded failed for %s: %s", module_path, e)
                 logger.error("Exception details:\n%s", traceback.format_exc())
                 await rpc.stop()
                 raise
@@ -135,7 +135,7 @@ async def async_entrypoint(
         except Exception as e:
             import traceback
 
-            logger.error("�📚 [PyIsolate][Client] Error loading extension from %s: %s", module_path, e)
+            logger.error("📚 [PyIsolate][Client] Error loading extension from %s: %s", module_path, e)
             logger.error("Exception details:\n%s", traceback.format_exc())
             raise
 
