@@ -547,4 +547,7 @@ class ProxiedSingleton(metaclass=SingletonMetaclass):
         # Iterate through all attributes on the class and register any that are also ProxiedSingleton
         for name, attr in self.__class__.__dict__.items():
             if isinstance(attr, ProxiedSingleton) and not name.startswith("_"):
+                # Prevent infinite recursion if the attribute is self (e.g. Singleton.instance = self)
+                if attr is self:
+                    continue
                 attr._register(rpc)

@@ -82,6 +82,7 @@ def build_child_sys_path(
             os.path.join(comfy_norm, "app"),
             os.path.join(comfy_norm, "comfy_execution"),
             os.path.join(comfy_norm, "comfy_extras"),
+            os.path.join(comfy_norm, "utils"),  # Added utils to prevent shadowing
         }
         filtered_host = []
         for p in ordered_host:

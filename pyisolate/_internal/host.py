@@ -434,21 +434,32 @@ class Extension(Generic[T]):
             try:
                 result = subprocess.run(  # noqa: S603
                     uv_args + safe_dependencies + uv_common_args,
-                    capture_output=not always_output,
+                    capture_output=True,  # Always capture output to filter it
                     text=True,
                     check=True,
                 )
                 # Only show output if there were actual changes (installations/updates)
                 if (
-                    not always_output
-                    and result.stderr
+                    result.stderr
                     and ("Installed" in result.stderr or "Uninstalled" in result.stderr)
                 ):
+                    # Parse uv output for a concise summary
+                    changes = []
+                    for line in result.stderr.splitlines():
+                        if line.strip().startswith("+") or line.strip().startswith("-") or "Installed" in line or "Uninstalled" in line:
+                             changes.append(line.strip())
+                    
+                    summary = f"Updated {len(changes)} packages" if changes else "Dependencies updated"
                     logger.info(
-                        "📚 [PyIsolate][Deps] uv reported changes for %s:\n%s",
+                        "📚 [PyIsolate][Deps] %s for %s (uv)",
+                        summary,
                         self.name,
-                        result.stderr.strip(),
                     )
+                    if always_output:
+                        logger.debug("📚 [PyIsolate][Deps] Full uv output:\n%s", result.stderr)
+                elif always_output:
+                     logger.debug("📚 [PyIsolate][Deps] uv output (no changes):\n%s", result.stderr)
+
             except subprocess.CalledProcessError as e:
                 detail = e.stderr.strip() if e.stderr else "(no stderr)"
                 msg = (

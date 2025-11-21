@@ -53,9 +53,31 @@ if os.environ.get("PYISOLATE_CHILD") == "1":
             print(f"📚 [PyIsolate][PathUnification] First 5 unified paths: {unified_path[:5]}", file=sys.stderr)
             print(f"📚 [PyIsolate][PathUnification] Total unified paths: {len(unified_path)}", file=sys.stderr)
             
+            # DETAILED DEBUG: Print full sys.path for analysis
+            print(f"📚 [PyIsolate][PathUnification] === FULL sys.path (total={len(unified_path)}) ===", file=sys.stderr)
+            for idx, path in enumerate(unified_path):
+                print(f"📚 [PyIsolate][PathUnification]   [{idx}] {path}", file=sys.stderr)
+            print(f"📚 [PyIsolate][PathUnification] === END sys.path ===", file=sys.stderr)
+            
             # Replace sys.path
             sys.path.clear()
             sys.path.extend(unified_path)
+            
+            # Test utils import immediately after path configuration
+            print(f"📚 [PyIsolate][PathUnification] Testing utils.json_util import...", file=sys.stderr)
+            try:
+                import utils.json_util
+                print(f"📚 [PyIsolate][PathUnification] ✅ utils.json_util import SUCCESS", file=sys.stderr)
+            except Exception as import_err:
+                print(f"📚 [PyIsolate][PathUnification] ❌ utils.json_util import FAILED: {import_err}", file=sys.stderr)
+                print(f"📚 [PyIsolate][PathUnification] Checking if 'utils' is importable...", file=sys.stderr)
+                try:
+                    import utils as utils_test
+                    print(f"📚 [PyIsolate][PathUnification] 'utils' found at: {getattr(utils_test, '__file__', 'NO __file__')}", file=sys.stderr)
+                    print(f"📚 [PyIsolate][PathUnification] 'utils' package: {getattr(utils_test, '__package__', 'NO __package__')}", file=sys.stderr)
+                    print(f"📚 [PyIsolate][PathUnification] 'utils' path: {getattr(utils_test, '__path__', 'NO __path__')}", file=sys.stderr)
+                except Exception as utils_err:
+                    print(f"📚 [PyIsolate][PathUnification] 'utils' import also failed: {utils_err}", file=sys.stderr)
             
             logger.info(
                 "📚 [PyIsolate][Client] Applied host snapshot on module import (comfy_root=%s, paths=%d)",
