@@ -132,7 +132,7 @@ class ExtensionManager(Generic[T]):
         if name in self.extensions:
             raise ValueError(f"Extension '{name}' is already loaded")
 
-        logger.info(
+        logger.debug(
             "📚 [PyIsolate][ExtensionManager] Loading extension name=%s module_path=%s isolated=%s share_torch=%s deps=%s",
             name,
             config.get("module_path"),
@@ -182,7 +182,7 @@ class ExtensionManager(Generic[T]):
 
         host_extension = HostExtension(extension.rpc, proxy, extension)
         host_extension._initialize_rpc(extension.rpc)
-        logger.info(
+        logger.debug(
             "📚 [PyIsolate][ExtensionManager] Extension %s ready (venv=%s)",
             name,
             extension.venv_path,
@@ -203,7 +203,7 @@ class ExtensionManager(Generic[T]):
             raise KeyError(f"No extension named '{name}' is loaded")
 
         try:
-            logger.info("📚 [PyIsolate][ExtensionManager] Stopping extension %s", name)
+            logger.debug("📚 [PyIsolate][ExtensionManager] Stopping extension %s", name)
             self.extensions[name].stop()
             del self.extensions[name]
         except Exception as e:

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import os
 import re
@@ -6,8 +8,9 @@ import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack, contextmanager
+from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Generic, Optional, TypeVar
 
 from ..config import ExtensionConfig
 from ..path_helpers import serialize_host_snapshot
@@ -16,6 +19,16 @@ from .client import entrypoint
 from .shared import AsyncRPC
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_pyisolate_version() -> str:
+    try:
+        return importlib_metadata.version("pyisolate")
+    except Exception:
+        return "0.0.0"
+
+
+pyisolate_version = _detect_pyisolate_version()
 
 
 def normalize_extension_name(name: str) -> str:
@@ -208,17 +221,17 @@ class Extension(Generic[T]):
             import torch.multiprocessing
 
             self.mp = torch.multiprocessing
-            logger.info("📚 [PyIsolate][Extension] Using torch.multiprocessing for %s", self.name)
+            logger.debug("📚 [PyIsolate][Extension] Using torch.multiprocessing for %s", self.name)
         else:
             import multiprocessing
 
             self.mp = multiprocessing
-            logger.info("📚 [PyIsolate][Extension] Using multiprocessing for %s", self.name)
+            logger.debug("📚 [PyIsolate][Extension] Using multiprocessing for %s", self.name)
 
         start_method = self.mp.get_start_method(allow_none=True)
         if start_method is None:
             self.mp.set_start_method("spawn")
-            logger.info("📚 [PyIsolate][Extension] Start method set to spawn for %s", self.name)
+            logger.debug("📚 [PyIsolate][Extension] Start method set to spawn for %s", self.name)
         elif start_method != "spawn":
             raise RuntimeError(
                 f"Invalid start method {start_method} for pyisolate. "
@@ -227,7 +240,7 @@ class Extension(Generic[T]):
         self.to_extension = self.mp.Queue()
         self.from_extension = self.mp.Queue()
         self.extension_proxy = None
-        logger.info(
+        logger.debug(
             "📚 [PyIsolate][Extension] Preparing extension name=%s normalized=%s venv=%s module_path=%s",
             self.name,
             self.normalized_name,
@@ -252,7 +265,7 @@ class Extension(Generic[T]):
 
     def stop(self) -> None:
         """Stop the extension process and clean up resources."""
-        logger.info("📚 [PyIsolate][Extension] Stopping extension %s", self.name)
+        logger.debug("📚 [PyIsolate][Extension] Stopping extension %s", self.name)
         errors: list[str] = []
 
         if hasattr(self, "proc") and self.proc.is_alive():
@@ -295,7 +308,7 @@ class Extension(Generic[T]):
 
         # Set the Python executable from the virtual environment
         executable = sys._base_executable if os.name == "nt" else str(self.venv_path / "bin" / "python")
-        logger.info(
+        logger.debug(
             "📚 [PyIsolate][Extension] Launching %s via executable=%s share_torch=%s",
             self.name,
             executable,
@@ -391,85 +404,118 @@ class Extension(Generic[T]):
         cache_dir.mkdir(exist_ok=True)
         uv_common_args.extend(["--cache-dir", str(cache_dir)])
 
-        # Install the same version of torch as the current process
+        # Install extension dependencies from config
+        safe_dependencies: list[str] = []
+        for dep in self.config["dependencies"]:
+            validate_dependency(dep)
+            safe_dependencies.append(dep)
+
+        install_required = bool(safe_dependencies) or self.config["share_torch"]
+        if not install_required:
+            logger.debug("📚 [PyIsolate][Deps] No dependencies to install for %s", self.name)
+            return
+
+        logger.debug(
+            "📚 [PyIsolate][Deps] Installing dependencies for %s deps=%s share_torch=%s",
+            self.name,
+            self.config["dependencies"],
+            self.config["share_torch"],
+        )
+
+        cmd_prefix = list(uv_args)
+
+        torch_spec: Optional[str] = None
         if self.config["share_torch"]:
             import torch
 
             torch_version = torch.__version__
             if torch_version.endswith("+cpu"):
-                # On Windows, the '+cpu' is not included in the version string
-                torch_version = torch_version[:-4]  # Remove the '+cpu' suffix
+                torch_version = torch_version[:-4]
             cuda_version = torch.version.cuda  # type: ignore
             if cuda_version:
                 uv_common_args += [
                     "--extra-index-url",
                     f"https://download.pytorch.org/whl/cu{cuda_version.replace('.', '')}",
                 ]
-            
-            # For dev/nightly builds: allow fallback to other indexes
-            # Without this, exact dev versions like '2.9.0.dev20250901+cu129' fail
+
             if "dev" in torch_version or "+" in torch_version:
                 uv_common_args.append("--index-strategy")
                 uv_common_args.append("unsafe-best-match")
-            
-            uv_args.append(f"torch=={torch_version}")
 
-        # Install extension dependencies from config
-        if self.config["dependencies"] or self.config["share_torch"]:
-            logger.info(
-                "📚 [PyIsolate][Deps] Installing dependencies for %s deps=%s share_torch=%s",
-                self.name,
-                self.config["dependencies"],
-                self.config["share_torch"],
-            )
+            torch_spec = f"torch=={torch_version}"
+            cmd_prefix.append(torch_spec)
 
-            # Re-validate dependencies before passing to subprocess (defense in depth)
-            safe_dependencies = []
-            for dep in self.config["dependencies"]:
-                validate_dependency(dep)
-                safe_dependencies.append(dep)
-
-            # In normal mode, suppress output unless there are actual changes
-            always_output = logger.isEnabledFor(logging.DEBUG)
+        descriptor = {
+            "dependencies": safe_dependencies,
+            "share_torch": self.config["share_torch"],
+            "torch_spec": torch_spec,
+            "pyisolate": pyisolate_version,
+            "python": sys.version,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(descriptor, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        lock_path = self.venv_path / ".pyisolate_deps.json"
+        if lock_path.exists():
             try:
-                result = subprocess.run(  # noqa: S603
-                    uv_args + safe_dependencies + uv_common_args,
-                    capture_output=True,  # Always capture output to filter it
-                    text=True,
-                    check=True,
+                cached = json.loads(lock_path.read_text(encoding="utf-8"))
+            except Exception:
+                cached = {}
+            if cached.get("fingerprint") == fingerprint:
+                logger.debug(
+                    "📚 [PyIsolate][Deps] Dependencies already satisfied for %s; skipping install",
+                    self.name,
                 )
-                # Only show output if there were actual changes (installations/updates)
-                if (
-                    result.stderr
-                    and ("Installed" in result.stderr or "Uninstalled" in result.stderr)
-                ):
-                    # Parse uv output for a concise summary
-                    changes = []
-                    for line in result.stderr.splitlines():
-                        if line.strip().startswith("+") or line.strip().startswith("-") or "Installed" in line or "Uninstalled" in line:
-                             changes.append(line.strip())
-                    
-                    summary = f"Updated {len(changes)} packages" if changes else "Dependencies updated"
-                    logger.info(
-                        "📚 [PyIsolate][Deps] %s for %s (uv)",
-                        summary,
-                        self.name,
-                    )
-                    if always_output:
-                        logger.debug("📚 [PyIsolate][Deps] Full uv output:\n%s", result.stderr)
-                elif always_output:
-                     logger.debug("📚 [PyIsolate][Deps] uv output (no changes):\n%s", result.stderr)
+                return
 
-            except subprocess.CalledProcessError as e:
-                detail = e.stderr.strip() if e.stderr else "(no stderr)"
+        cmd = cmd_prefix + safe_dependencies + uv_common_args
+        logger.debug(
+            "📚 [PyIsolate][Deps] Running uv command for %s: %s",
+            self.name,
+            " ".join(cmd),
+        )
+
+        try:
+            with subprocess.Popen(  # noqa: S603
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            ) as proc:
+                assert proc.stdout is not None
+                uv_lines: list[str] = []
+                for line in proc.stdout:
+                    clean = line.rstrip()
+                    if "pyisolate==" in clean or "pyisolate @" in clean:
+                        continue
+                    uv_lines.append(clean)
+                    logger.debug("📚 [PyIsolate][Deps][uv] %s", clean)
+                return_code = proc.wait()
+            if return_code != 0:
+                detail = "\n".join(uv_lines) or "(no output)"
                 msg = (
                     f"📚 [PyIsolate][Deps] uv install failed for {self.name} "
-                    f"returncode={e.returncode} command={' '.join(e.cmd)} stderr={detail}"
+                    f"returncode={return_code} command={' '.join(cmd)} output={detail}"
                 )
                 logger.error(msg)
-                raise RuntimeError(msg) from e
-        else:
-            logger.info("📚 [PyIsolate][Deps] No dependencies to install for %s", self.name)
+                raise RuntimeError(msg)
+            logger.debug(
+                "📚 [PyIsolate][Deps] Completed uv install for %s (returncode=%s)",
+                self.name,
+                return_code,
+            )
+            lock_path.write_text(
+                json.dumps({"fingerprint": fingerprint, "descriptor": descriptor}, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:  # Includes FileNotFoundError, BrokenPipeError, etc.
+            msg = (
+                f"📚 [PyIsolate][Deps] uv install failed for {self.name} due to OS error "
+                f"{e.__class__.__name__}: {e}"
+            )
+            logger.error(msg)
+            raise RuntimeError(msg) from e
 
     def join(self):
         """

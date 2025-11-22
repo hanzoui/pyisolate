@@ -144,6 +144,15 @@ class RPCRequest(TypedDict):
     kwargs: dict
 
 
+class RPCCallback(TypedDict):
+    kind: Literal["callback"]
+    callback_id: str
+    call_id: int
+    parent_call_id: int | None
+    args: tuple
+    kwargs: dict
+
+
 class RPCResponse(TypedDict):
     kind: Literal["response"]
     call_id: int
@@ -151,11 +160,11 @@ class RPCResponse(TypedDict):
     error: str | None
 
 
-RPCMessage = Union[RPCRequest, RPCResponse]
+RPCMessage = Union[RPCRequest, RPCCallback, RPCResponse]
 
 
 class RPCPendingRequest(TypedDict):
-    kind: Literal["call"]
+    kind: Literal["call", "callback"]
     object_id: str
     parent_call_id: int | None
     calling_loop: asyncio.AbstractEventLoop
@@ -169,6 +178,9 @@ RPCPendingMessage = Union[RPCPendingRequest, RPCResponse]
 
 
 proxied_type = TypeVar("proxied_type", bound=object)
+
+
+current_rpc_context: contextvars.ContextVar[AsyncRPC | None] = contextvars.ContextVar("current_rpc_context", default=None)
 
 
 class AsyncRPC:
@@ -186,10 +198,33 @@ class AsyncRPC:
         self.pending: dict[int, RPCPendingRequest] = {}
         self.default_loop = asyncio.get_event_loop()
         self.callees: dict[str, object] = {}
+        self.callbacks: dict[str, Any] = {}
         self.blocking_future: asyncio.Future | None = None
 
         # Use an outbox to avoid blocking when we try to send
         self.outbox: queue.Queue[RPCPendingRequest] = queue.Queue()
+
+    def register_callback(self, func: Any) -> str:
+        callback_id = str(uuid.uuid4())
+        with self.lock:
+            self.callbacks[callback_id] = func
+        return callback_id
+
+    async def call_callback(self, callback_id: str, *args, **kwargs):
+        loop = asyncio.get_event_loop()
+        pending_request = RPCPendingRequest(
+            kind="callback",
+            object_id=callback_id,
+            parent_call_id=self.handling_call_id.get(),
+            calling_loop=loop,
+            future=loop.create_future(),
+            method="__call__",
+            args=args,
+            kwargs=kwargs,
+        )
+        self.outbox.put(pending_request)
+        result = await pending_request["future"]
+        return result
 
     def create_caller(self, abc: type[proxied_type], object_id: str) -> proxied_type:
         this = self
@@ -259,26 +294,48 @@ class AsyncRPC:
         for t in self._threads:
             t.start()
 
-    async def dispatch_request(self, request: RPCRequest):
+    async def dispatch_request(self, request: RPCRequest | RPCCallback):
+        token = current_rpc_context.set(self)
         try:
-            object_id = request["object_id"]
-            method = request["method"]
-            args = request["args"]
-            kwargs = request["kwargs"]
+            if request["kind"] == "callback":
+                callback_id = request["callback_id"]
+                args = request["args"]
+                kwargs = request["kwargs"]
 
-            callee = None
-            with self.lock:
-                callee = self.callees.get(object_id, None)
+                callback = None
+                with self.lock:
+                    callback = self.callbacks.get(callback_id)
 
-            if callee is None:
-                raise ValueError(f"Object ID {object_id} not registered for remote calls")
+                if callback is None:
+                    raise ValueError(f"Callback ID {callback_id} not found")
 
-            # Call the method on the callee
-            debugprint("Dispatching request: ", request)
-            func = getattr(callee, method)
-            result = (
-                (await func(*args, **kwargs)) if inspect.iscoroutinefunction(func) else func(*args, **kwargs)
-            )
+                debugprint("Dispatching callback: ", request)
+                result = (
+                    (await callback(*args, **kwargs))
+                    if inspect.iscoroutinefunction(callback)
+                    else callback(*args, **kwargs)
+                )
+            else:
+                object_id = request["object_id"]
+                method = request["method"]
+                args = request["args"]
+                kwargs = request["kwargs"]
+
+                callee = None
+                with self.lock:
+                    callee = self.callees.get(object_id, None)
+
+                if callee is None:
+                    raise ValueError(f"Object ID {object_id} not registered for remote calls")
+
+                # Call the method on the callee
+                debugprint("Dispatching request: ", request)
+                func = getattr(callee, method)
+                result = (
+                    (await func(*args, **kwargs))
+                    if inspect.iscoroutinefunction(func)
+                    else func(*args, **kwargs)
+                )
             response = RPCResponse(
                 kind="response",
                 call_id=request["call_id"],
@@ -288,9 +345,8 @@ class AsyncRPC:
         except Exception as exc:
             error_msg = str(exc)
             logger.exception(
-                "📚 [PyIsolate][RPC] Dispatch failed for %s.%s: %s",
-                request.get("object_id", "unknown"),
-                request.get("method", "unknown"),
+                "📚 [PyIsolate][RPC] Dispatch failed for %s: %s",
+                request.get("object_id", request.get("callback_id", "unknown")),
                 error_msg,
             )
             response = RPCResponse(
@@ -299,6 +355,8 @@ class AsyncRPC:
                 result=None,
                 error=error_msg,
             )
+        finally:
+            current_rpc_context.reset(token)
 
         debugprint("Sending response: ", response)
         try:
@@ -345,8 +403,8 @@ class AsyncRPC:
                 else:
                     # If we don"t have a pending request, I guess we just continue on
                     continue
-            elif item["kind"] == "call":
-                request = cast(RPCRequest, item)
+            elif item["kind"] == "call" or item["kind"] == "callback":
+                request = cast(Union[RPCRequest, RPCCallback], item)
                 debugprint("Got call: ", request)
                 request_parent = request.get("parent_call_id", None)
                 call_id = request["call_id"]
@@ -360,7 +418,7 @@ class AsyncRPC:
                     if pending_request:
                         call_on_loop = pending_request["calling_loop"]
 
-                async def call_with_context(captured_request: RPCRequest):
+                async def call_with_context(captured_request: RPCRequest | RPCCallback):
                     # Set the context variable directly when the coroutine actually runs
                     token = self.handling_call_id.set(captured_request["call_id"])
                     try:
@@ -402,6 +460,35 @@ class AsyncRPC:
                     message = (
                         f"📚 [PyIsolate][RPC] Failed sending RPC request "
                         f"(rpc_id={self.id}, method={item['method']}): {exc}"
+                    )
+                    with self.lock:
+                        pending = self.pending.pop(call_id, None)
+                    if pending:
+                        pending["calling_loop"].call_soon_threadsafe(
+                            pending["future"].set_exception,
+                            RuntimeError(message),
+                        )
+                    logger.exception(message)
+                    raise RuntimeError(message) from exc
+            elif item["kind"] == "callback":
+                call_id = id_gen
+                id_gen += 1
+                with self.lock:
+                    self.pending[call_id] = item
+                request = RPCCallback(
+                    kind="callback",
+                    callback_id=item["object_id"],
+                    call_id=call_id,
+                    parent_call_id=item["parent_call_id"],
+                    args=item["args"],
+                    kwargs=item["kwargs"],
+                )
+                try:
+                    self.send_queue.put(request)
+                except Exception as exc:
+                    message = (
+                        f"📚 [PyIsolate][RPC] Failed sending RPC callback "
+                        f"(rpc_id={self.id}): {exc}"
                     )
                     with self.lock:
                         pending = self.pending.pop(call_id, None)
