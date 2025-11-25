@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import ExitStack, contextmanager
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -300,11 +301,17 @@ class Extension(Generic[T]):
         """
         Launch the extension in a separate process.
         """
+        start_time = time.time()
+
         # Create the virtual environment for the extension
+        venv_start = time.time()
         self._create_extension_venv()
+        venv_time = time.time() - venv_start
 
         # Install dependencies in the virtual environment
+        install_start = time.time()
         self._install_dependencies()
+        install_time = time.time() - install_start
 
         # Set the Python executable from the virtual environment
         executable = sys._base_executable if os.name == "nt" else str(self.venv_path / "bin" / "python")
@@ -351,7 +358,40 @@ class Extension(Generic[T]):
                 ),
             )
             proc.start()
+
+        total_time = time.time() - start_time
+        logger.info(
+            "📚 [PyIsolate][Load] ✅ Loaded extension '%s' in %.2fs (venv=%.2fs, install=%.2fs)",
+            self.name,
+            total_time,
+            venv_time,
+            install_time,
+        )
         return proc
+
+    def _ensure_uv(self) -> bool:
+        """
+        Ensure 'uv' is available. If not found, attempt to install it via pip.
+        Returns True if uv is available (either found or installed), False otherwise.
+        """
+        if shutil.which("uv"):
+            return True
+
+        logger.warning("📚 [PyIsolate][Setup] ⚠️ 'uv' not found. Attempting to install via pip...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "uv"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            if shutil.which("uv"):
+                logger.info("📚 [PyIsolate][Setup] ✅ 'uv' installed successfully.")
+                return True
+        except Exception as e:
+            logger.warning(f"📚 [PyIsolate][Setup] ⚠️ Failed to install 'uv': {e}")
+        
+        logger.warning("📚 [PyIsolate][Setup] ⚠️ Falling back to standard pip/venv (slower).")
+        return False
 
     def _create_extension_venv(self):
         """
@@ -367,13 +407,13 @@ class Extension(Generic[T]):
                 self.venv_path,
             )
 
-            # Find uv executable path for better security
-            uv_path = shutil.which("uv")
-            if not uv_path:
-                raise RuntimeError("uv command not found in PATH")
-
-            # Use the resolved, validated path
-            subprocess.check_call([uv_path, "venv", str(self.venv_path)])  # noqa: S603
+            if self._ensure_uv():
+                # Use uv for speed
+                uv_path = shutil.which("uv")
+                subprocess.check_call([uv_path, "venv", str(self.venv_path)])  # noqa: S603
+            else:
+                # Fallback to standard venv
+                subprocess.check_call([sys.executable, "-m", "venv", str(self.venv_path)])  # noqa: S603
 
     # TODO(Optimization): Only do this when we update a extension to reduce startup time?
     def _install_dependencies(self):
@@ -389,20 +429,9 @@ class Extension(Generic[T]):
         if not python_executable.exists():
             raise RuntimeError(f"Python executable not found at {python_executable}")
 
-        # Find uv executable path for better security
-        uv_path = shutil.which("uv")
-        if not uv_path:
-            raise RuntimeError("uv command not found in PATH")
-
-        uv_args = [uv_path, "pip", "install", "--python", str(python_executable)]
-
-        uv_common_args = []
-
-        # Set up a local cache directory next to venvs to ensure same filesystem
-        # This enables hardlinking and saves disk space
-        cache_dir = self.venv_path.parent / ".uv_cache"
-        cache_dir.mkdir(exist_ok=True)
-        uv_common_args.extend(["--cache-dir", str(cache_dir)])
+        # Determine if we can use uv
+        use_uv = self._ensure_uv()
+        uv_path = shutil.which("uv") if use_uv else None
 
         # Install extension dependencies from config
         safe_dependencies: list[str] = []
@@ -422,7 +451,17 @@ class Extension(Generic[T]):
             self.config["share_torch"],
         )
 
-        cmd_prefix = list(uv_args)
+        # Prepare command prefix and args
+        if use_uv:
+            cmd_prefix = [uv_path, "pip", "install", "--python", str(python_executable)]
+            common_args = []
+            # Set up a local cache directory next to venvs to ensure same filesystem
+            cache_dir = self.venv_path.parent / ".uv_cache"
+            cache_dir.mkdir(exist_ok=True)
+            common_args.extend(["--cache-dir", str(cache_dir)])
+        else:
+            cmd_prefix = [str(python_executable), "-m", "pip", "install"]
+            common_args = []
 
         torch_spec: Optional[str] = None
         if self.config["share_torch"]:
@@ -433,14 +472,16 @@ class Extension(Generic[T]):
                 torch_version = torch_version[:-4]
             cuda_version = torch.version.cuda  # type: ignore
             if cuda_version:
-                uv_common_args += [
+                common_args += [
                     "--extra-index-url",
                     f"https://download.pytorch.org/whl/cu{cuda_version.replace('.', '')}",
                 ]
 
             if "dev" in torch_version or "+" in torch_version:
-                uv_common_args.append("--index-strategy")
-                uv_common_args.append("unsafe-best-match")
+                if use_uv:
+                    common_args.append("--index-strategy")
+                    common_args.append("unsafe-best-match")
+                # pip handles this differently or ignores it, usually fine for simple cases
 
             torch_spec = f"torch=={torch_version}"
             cmd_prefix.append(torch_spec)
@@ -462,15 +503,17 @@ class Extension(Generic[T]):
             except Exception:
                 cached = {}
             if cached.get("fingerprint") == fingerprint:
-                logger.debug(
-                    "📚 [PyIsolate][Deps] Dependencies already satisfied for %s; skipping install",
+                logger.info(
+                    "📚 [PyIsolate][Deps] ♻️  Using cached environment (fingerprint match) for %s",
                     self.name,
                 )
                 return
 
-        cmd = cmd_prefix + safe_dependencies + uv_common_args
+        logger.info("📚 [PyIsolate][Deps] ⬇️  Installing dependencies for %s...", self.name)
+
+        cmd = cmd_prefix + safe_dependencies + common_args
         logger.debug(
-            "📚 [PyIsolate][Deps] Running uv command for %s: %s",
+            "📚 [PyIsolate][Deps] Running command for %s: %s",
             self.name,
             " ".join(cmd),
         )
@@ -484,24 +527,24 @@ class Extension(Generic[T]):
                 bufsize=1,
             ) as proc:
                 assert proc.stdout is not None
-                uv_lines: list[str] = []
+                output_lines: list[str] = []
                 for line in proc.stdout:
                     clean = line.rstrip()
                     if "pyisolate==" in clean or "pyisolate @" in clean:
                         continue
-                    uv_lines.append(clean)
-                    logger.debug("📚 [PyIsolate][Deps][uv] %s", clean)
+                    output_lines.append(clean)
+                    logger.debug("📚 [PyIsolate][Deps][install] %s", clean)
                 return_code = proc.wait()
             if return_code != 0:
-                detail = "\n".join(uv_lines) or "(no output)"
+                detail = "\n".join(output_lines) or "(no output)"
                 msg = (
-                    f"📚 [PyIsolate][Deps] uv install failed for {self.name} "
+                    f"📚 [PyIsolate][Deps] Install failed for {self.name} "
                     f"returncode={return_code} command={' '.join(cmd)} output={detail}"
                 )
                 logger.error(msg)
                 raise RuntimeError(msg)
             logger.debug(
-                "📚 [PyIsolate][Deps] Completed uv install for %s (returncode=%s)",
+                "📚 [PyIsolate][Deps] Completed install for %s (returncode=%s)",
                 self.name,
                 return_code,
             )
@@ -511,7 +554,7 @@ class Extension(Generic[T]):
             )
         except OSError as e:  # Includes FileNotFoundError, BrokenPipeError, etc.
             msg = (
-                f"📚 [PyIsolate][Deps] uv install failed for {self.name} due to OS error "
+                f"📚 [PyIsolate][Deps] Install failed for {self.name} due to OS error "
                 f"{e.__class__.__name__}: {e}"
             )
             logger.error(msg)
