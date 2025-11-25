@@ -503,7 +503,7 @@ class Extension(Generic[T]):
             except Exception:
                 cached = {}
             if cached.get("fingerprint") == fingerprint:
-                logger.info(
+                logger.debug(
                     "📚 [PyIsolate][Deps] ♻️  Using cached environment (fingerprint match) for %s",
                     self.name,
                 )
