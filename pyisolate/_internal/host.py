@@ -301,17 +301,11 @@ class Extension(Generic[T]):
         """
         Launch the extension in a separate process.
         """
-        start_time = time.time()
-
         # Create the virtual environment for the extension
-        venv_start = time.time()
         self._create_extension_venv()
-        venv_time = time.time() - venv_start
 
         # Install dependencies in the virtual environment
-        install_start = time.time()
         self._install_dependencies()
-        install_time = time.time() - install_start
 
         # Set the Python executable from the virtual environment
         executable = sys._base_executable if os.name == "nt" else str(self.venv_path / "bin" / "python")
@@ -359,14 +353,6 @@ class Extension(Generic[T]):
             )
             proc.start()
 
-        total_time = time.time() - start_time
-        logger.info(
-            "📚 [PyIsolate][Load] ✅ Loaded extension '%s' in %.2fs (venv=%.2fs, install=%.2fs)",
-            self.name,
-            total_time,
-            venv_time,
-            install_time,
-        )
         return proc
 
     def _ensure_uv(self) -> bool:
