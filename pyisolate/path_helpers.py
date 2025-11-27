@@ -81,7 +81,7 @@ def build_child_sys_path(
             os.path.join(comfy_norm, "comfy"),
             os.path.join(comfy_norm, "app"),
             os.path.join(comfy_norm, "comfy_execution"),
-            os.path.join(comfy_norm, "comfy_extras"),
+            # comfy_extras is a legitimate package, nodes need to import it
             os.path.join(comfy_norm, "utils"),  # Added utils to prevent shadowing
         }
         filtered_host = []
