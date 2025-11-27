@@ -133,6 +133,11 @@ async def async_entrypoint(
     )
 
     rpc = AsyncRPC(recv_queue=to_extension, send_queue=from_extension)
+    
+    # Store RPC globally for deserialization use
+    from .shared import set_child_rpc_instance
+    set_child_rpc_instance(rpc)
+    
     extension = extension_type()
     extension._initialize_rpc(rpc)
     await extension.before_module_loaded()

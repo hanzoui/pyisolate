@@ -37,11 +37,49 @@ def debugprint(*args, **kwargs):
         logger.debug(" ".join(str(arg) for arg in args))
 
 
+# Global RPC instance for child process (set during initialization)
+_child_rpc_instance: Any = None  # Optional[AsyncRPC] but avoid circular import
+
+def set_child_rpc_instance(rpc: Any) -> None:
+    """Set the global RPC instance for child process (internal use only)."""
+    global _child_rpc_instance
+    _child_rpc_instance = rpc
+
+def get_child_rpc_instance() -> Any:
+    """Get the global RPC instance for child process (internal use only)."""
+    return _child_rpc_instance
+
+
 def _tensor_to_cpu(obj: Any) -> Any:
     """
     Recursively convert CUDA tensors to CPU tensors for safe IPC serialization.
     This avoids cudaMallocAsync IPC sharing issues.
+    
+    Also handles custom object serialization (e.g., ModelPatcher for ComfyUI).
     """
+    # Custom serialization hook for ModelPatcher (ComfyUI integration)
+    if type(obj).__name__ == 'ModelPatcher':
+        try:
+            from comfy.isolation.model_registry import get_current_registry_if_exists
+            registry = get_current_registry_if_exists()
+            if registry is not None:
+                model_id = registry.register(obj)
+                logger.info(f"📚 [PyIsolate][Serialization] ModelPatcher → ref {model_id}")
+                return {
+                    "__type__": "ModelPatcherRef",
+                    "model_id": model_id,
+                }
+            else:
+                logger.warning(f"📚 [PyIsolate][Serialization] No registry available for ModelPatcher serialization")
+        except ImportError as e:
+            logger.warning(f"📚 [PyIsolate][Serialization] ComfyUI integration not available: {e}")
+        except Exception as e:
+            logger.error(f"📚 [PyIsolate][Serialization] Failed to serialize ModelPatcher: {e}")
+    
+    # Also check for model_sampling attribute (nested pickle issue)
+    if hasattr(obj, 'model_sampling') and type(obj.model_sampling).__name__ == 'ModelSampling':
+        logger.warning(f"📚 [PyIsolate][Serialization] Detected ModelSampling in object, this may cause pickle issues")
+    
     try:
         import torch
         if isinstance(obj, torch.Tensor):
@@ -64,7 +102,51 @@ def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
     Previously converted CPU tensors back to CUDA, but this causes issues because
     ComfyUI expects image tensors to remain on CPU. Now this is a no-op passthrough.
     Tensors stay on whatever device they were after CPU conversion for serialization.
+    
+    Also handles custom object deserialization (e.g., ModelPatcher for ComfyUI).
     """
+    # Custom deserialization hook for ModelPatcherRef (ComfyUI integration)
+    if isinstance(obj, dict) and obj.get("__type__") == "ModelPatcherRef":
+        try:
+            import os
+            is_child = os.environ.get("PYISOLATE_CHILD") == "1"
+            
+            if is_child:
+                # Child-side: deserialize ref to ModelPatcherProxy
+                from comfy.isolation.model_proxy import ModelPatcherProxy
+                
+                # Try current context first, then fall back to global instance
+                rpc = current_rpc_context.get()
+                if rpc is None:
+                    rpc = get_child_rpc_instance()
+                
+                if rpc is not None:
+                    model_id = obj["model_id"]
+                    logger.info(f"📚 [PyIsolate][Deserialization] ref {model_id} → ModelPatcherProxy (child)")
+                    return ModelPatcherProxy(model_id, rpc)
+                else:
+                    logger.error(f"📚 [PyIsolate][Deserialization] No RPC available for proxy creation")
+            else:
+                # Host-side: deserialize ref back to real ModelPatcher
+                from comfy.isolation.model_registry import get_current_registry_if_exists
+                registry = get_current_registry_if_exists()
+                if registry is not None:
+                    model_id = obj["model_id"]
+                    patcher = registry.get(model_id)
+                    if patcher is not None:
+                        logger.debug(f"📚 [PyIsolate][Deserialization] ref {model_id} → ModelPatcher (host)")
+                        return patcher
+                    else:
+                        logger.warning(f"📚 [PyIsolate][Deserialization] ModelPatcher {model_id} not found in registry")
+        except ImportError as e:
+            logger.debug(f"📚 [PyIsolate][Deserialization] ComfyUI integration not available: {e}")
+    
+    if isinstance(obj, dict):
+        return {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        converted = [_tensor_to_cuda(item, device) for item in obj]
+        return type(obj)(converted) if isinstance(obj, tuple) else converted
+    
     # No-op: don't move tensors to CUDA, leave them on CPU as ComfyUI expects
     return obj
 
