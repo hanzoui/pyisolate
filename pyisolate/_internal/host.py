@@ -388,18 +388,30 @@ class Extension(Generic[T]):
 
         if not self.venv_path.exists():
             logger.info(
-                "📚 [PyIsolate][Venv] Creating virtual environment name=%s path=%s",
+                "📚 [PyIsolate][Venv] Creating virtual environment name=%s path=%s share_torch=%s",
                 self.name,
                 self.venv_path,
+                self.config["share_torch"],
             )
 
-            if self._ensure_uv():
-                # Use uv for speed
-                uv_path = shutil.which("uv")
-                subprocess.check_call([uv_path, "venv", str(self.venv_path)])  # noqa: S603
-            else:
-                # Fallback to standard venv
-                subprocess.check_call([sys.executable, "-m", "venv", str(self.venv_path)])  # noqa: S603
+            # Always use sys.executable (host Python) to create venv
+            # This ensures --system-site-packages inherits from the correct environment
+            cmd = [sys.executable, "-m", "venv"]
+            
+            # Add --system-site-packages when sharing torch
+            if self.config["share_torch"]:
+                cmd.append("--system-site-packages")
+            
+            cmd.append(str(self.venv_path))
+            logger.debug("📚 [PyIsolate][Venv] Running: %s", " ".join(cmd))
+            try:
+                subprocess.check_call(cmd)  # noqa: S603
+                logger.info("📚 [PyIsolate][Venv] ✅ Created venv at %s", self.venv_path)
+            except subprocess.CalledProcessError as e:
+                logger.error("📚 [PyIsolate][Venv] ❌ Failed to create venv: %s", e)
+                raise
+        else:
+            logger.debug("📚 [PyIsolate][Venv] ♻️  Reusing existing venv at %s", self.venv_path)
 
     # TODO(Optimization): Only do this when we update a extension to reduce startup time?
     def _install_dependencies(self):
@@ -445,12 +457,42 @@ class Extension(Generic[T]):
             cache_dir = self.venv_path.parent / ".uv_cache"
             cache_dir.mkdir(exist_ok=True)
             common_args.extend(["--cache-dir", str(cache_dir)])
+            
+            # Use hardlinks for near-instant installation from cache
+            # Note: Falls back to copy automatically if hardlinks fail (cross-filesystem)
+            try:
+                # Test if hardlinks work between cache and venv
+                test_file = cache_dir / ".hardlink_test"
+                test_link = self.venv_path / ".hardlink_test"
+                test_file.touch()
+                try:
+                    os.link(test_file, test_link)
+                    test_link.unlink()
+                    common_args.extend(["--link-mode", "hardlink"])
+                    logger.debug("📚 [PyIsolate][Deps] Using hardlink mode for %s", self.name)
+                except OSError:
+                    # Cross-filesystem, use copy mode
+                    common_args.extend(["--link-mode", "copy"])
+                    logger.debug("📚 [PyIsolate][Deps] Hardlinks unavailable, using copy mode for %s", self.name)
+                finally:
+                    test_file.unlink(missing_ok=True)
+            except Exception as e:
+                # Fallback: don't specify link-mode, let uv decide
+                logger.debug("📚 [PyIsolate][Deps] Link mode test failed, using uv default for %s: %s", self.name, e)
         else:
             cmd_prefix = [str(python_executable), "-m", "pip", "install"]
             common_args = []
 
         torch_spec: Optional[str] = None
+        # When share_torch=true, PyTorch is inherited via --system-site-packages
+        # Only install torch explicitly when NOT sharing (fully isolated mode)
         if self.config["share_torch"]:
+            logger.info(
+                "📚 [PyIsolate][Deps] Skipping torch install for %s (inherited from host via --system-site-packages)",
+                self.name,
+            )
+        else:
+            # Fully isolated mode: install torch in isolated venv
             import torch
 
             torch_version = torch.__version__
@@ -470,7 +512,12 @@ class Extension(Generic[T]):
                 # pip handles this differently or ignores it, usually fine for simple cases
 
             torch_spec = f"torch=={torch_version}"
-            cmd_prefix.append(torch_spec)
+            safe_dependencies.insert(0, torch_spec)
+            logger.info(
+                "📚 [PyIsolate][Deps] Installing torch %s in fully isolated venv for %s",
+                torch_spec,
+                self.name,
+            )
 
         descriptor = {
             "dependencies": safe_dependencies,
@@ -519,7 +566,7 @@ class Extension(Generic[T]):
                     if "pyisolate==" in clean or "pyisolate @" in clean:
                         continue
                     output_lines.append(clean)
-                    logger.debug("📚 [PyIsolate][Deps][install] %s", clean)
+                    logger.info("📚 [PyIsolate][Deps] %s", clean)
                 return_code = proc.wait()
             if return_code != 0:
                 detail = "\n".join(output_lines) or "(no output)"
