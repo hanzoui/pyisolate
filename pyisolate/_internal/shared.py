@@ -37,6 +37,38 @@ def debugprint(*args, **kwargs):
         logger.debug(" ".join(str(arg) for arg in args))
 
 
+def _tensor_to_cpu(obj: Any) -> Any:
+    """
+    Recursively convert CUDA tensors to CPU tensors for safe IPC serialization.
+    This avoids cudaMallocAsync IPC sharing issues.
+    """
+    try:
+        import torch
+        if isinstance(obj, torch.Tensor):
+            if obj.is_cuda:
+                return obj.cpu()
+            return obj
+    except ImportError:
+        pass
+    
+    if isinstance(obj, dict):
+        return {k: _tensor_to_cpu(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        converted = [_tensor_to_cpu(item) for item in obj]
+        return type(obj)(converted) if isinstance(obj, tuple) else converted
+    return obj
+
+
+def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
+    """
+    Previously converted CPU tensors back to CUDA, but this causes issues because
+    ComfyUI expects image tensors to remain on CPU. Now this is a no-op passthrough.
+    Tensors stay on whatever device they were after CPU conversion for serialization.
+    """
+    # No-op: don't move tensors to CUDA, leave them on CPU as ComfyUI expects
+    return obj
+
+
 def local_execution(func):
     """Decorator to mark a ProxiedSingleton method for local execution.
 
@@ -360,7 +392,9 @@ class AsyncRPC:
 
         debugprint("Sending response: ", response)
         try:
-            self.send_queue.put(response)
+            # Convert CUDA tensors to CPU before sending to avoid cudaMallocAsync IPC issues
+            safe_response = _tensor_to_cpu(response)
+            self.send_queue.put(safe_response)
         except Exception as exc:
             message = f"📚 [PyIsolate][RPC] Failed sending response (rpc_id={self.id}): {exc}"
             logger.exception(message)
@@ -370,6 +404,8 @@ class AsyncRPC:
         while True:
             try:
                 item = self.recv_queue.get()
+                # Convert CPU tensors back to CUDA after receiving
+                item = _tensor_to_cuda(item)
             except Exception as exc:
                 message = f"📚 [PyIsolate][RPC] Failed receiving message (rpc_id={self.id}): {exc}"
                 logger.exception(message)
@@ -451,8 +487,8 @@ class AsyncRPC:
                     call_id=call_id,
                     parent_call_id=item["parent_call_id"],
                     method=item["method"],
-                    args=item["args"],
-                    kwargs=item["kwargs"],
+                    args=_tensor_to_cpu(item["args"]),
+                    kwargs=_tensor_to_cpu(item["kwargs"]),
                 )
                 try:
                     self.send_queue.put(request)
@@ -480,8 +516,8 @@ class AsyncRPC:
                     callback_id=item["object_id"],
                     call_id=call_id,
                     parent_call_id=item["parent_call_id"],
-                    args=item["args"],
-                    kwargs=item["kwargs"],
+                    args=_tensor_to_cpu(item["args"]),
+                    kwargs=_tensor_to_cpu(item["kwargs"]),
                 )
                 try:
                     self.send_queue.put(request)
@@ -501,7 +537,8 @@ class AsyncRPC:
                     raise RuntimeError(message) from exc
             elif item["kind"] == "response":
                 try:
-                    self.send_queue.put(item)
+                    safe_item = _tensor_to_cpu(item)
+                    self.send_queue.put(safe_item)
                 except Exception as exc:
                     message = f"📚 [PyIsolate][RPC] Failed relaying response (rpc_id={self.id}): {exc}"
                     logger.exception(message)
