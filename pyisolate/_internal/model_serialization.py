@@ -85,22 +85,41 @@ def serialize_for_isolation(data: Any, registry: 'ScopedModelRegistry') -> Any:
     
     This is called on the HOST side before sending data to child.
     ModelPatcher instances are replaced with {"__type__": "ModelPatcherRef", "model_id": "..."}.
+    CLIP instances are replaced with {"__type__": "CLIPRef", "clip_id": "..."}.
     
     Args:
-        data: Arbitrary data (may contain ModelPatcher)
+        data: Arbitrary data (may contain ModelPatcher or CLIP)
         registry: Active registry for this execution scope
         
     Returns:
         Serialized structure safe for cross-process transport
     """
+    type_name = type(data).__name__
+    
     # Check if it's a ModelPatcher (avoid importing to prevent circular deps)
-    if type(data).__name__ == 'ModelPatcher':
+    if type_name == 'ModelPatcher':
         model_id = registry.register(data)
         logger.debug(f"📚 [Serialization] ModelPatcher → ModelPatcherRef({model_id})")
         return {
             "__type__": "ModelPatcherRef",
             "model_id": model_id,
         }
+    
+    # Check if it's a CLIP object
+    elif type_name == 'CLIP':
+        try:
+            from comfy.isolation.clip_proxy import CLIPRegistry
+            clip_registry = CLIPRegistry()
+            clip_id = clip_registry.register(data)
+            logger.debug(f"📚 [Serialization] CLIP → CLIPRef({clip_id})")
+            return {
+                "__type__": "CLIPRef",
+                "clip_id": clip_id,
+            }
+        except ImportError:
+            logger.warning("📚 [Serialization] ComfyUI integration not available: No module named 'comfy.isolation.model_registry'")
+            # Fallback: let pickle handle it (will fail if CLIP has lambdas, but that's expected)
+            return data
     
     elif isinstance(data, dict):
         # Avoid double-wrapping refs
@@ -122,24 +141,42 @@ def deserialize_from_isolation(data: Any, registry: 'ScopedModelRegistry') -> An
     
     This is called on the HOST side after receiving results from child.
     ModelPatcherRef markers are resolved back to real ModelPatcher objects.
+    CLIPRef markers are resolved back to real CLIP objects.
     
     Args:
         data: Serialized structure from child
         registry: Active registry for this execution scope
         
     Returns:
-        Deserialized structure with real ModelPatcher instances
+        Deserialized structure with real ModelPatcher/CLIP instances
     """
-    if isinstance(data, dict) and data.get("__type__") == "ModelPatcherRef":
-        model_id = data["model_id"]
-        patcher = registry.get(model_id)
-        if patcher is None:
-            raise RuntimeError(
-                f"ModelPatcher ID {model_id} not found. "
-                f"Either the execution scope expired or the ID is invalid."
-            )
-        logger.debug(f"📚 [Serialization] ModelPatcherRef({model_id}) → ModelPatcher")
-        return patcher
+    if isinstance(data, dict):
+        ref_type = data.get("__type__")
+        
+        if ref_type == "ModelPatcherRef":
+            model_id = data["model_id"]
+            patcher = registry.get(model_id)
+            if patcher is None:
+                raise RuntimeError(
+                    f"ModelPatcher ID {model_id} not found. "
+                    f"Either the execution scope expired or the ID is invalid."
+                )
+            logger.debug(f"📚 [Serialization] ModelPatcherRef({model_id}) → ModelPatcher")
+            return patcher
+        
+        elif ref_type == "CLIPRef":
+            clip_id = data["clip_id"]
+            try:
+                from comfy.isolation.clip_proxy import CLIPRegistry
+                clip_registry = CLIPRegistry()
+                clip = clip_registry._get_instance(clip_id)
+                logger.debug(f"📚 [Serialization] CLIPRef({clip_id}) → CLIP")
+                return clip
+            except Exception as e:
+                raise RuntimeError(
+                    f"CLIP ID {clip_id} not found: {e}. "
+                    f"Either the execution scope expired or the ID is invalid."
+                )
     
     elif isinstance(data, dict):
         return {k: deserialize_from_isolation(v, registry) for k, v in data.items()}
@@ -157,6 +194,7 @@ def deserialize_proxy_result(data: Any, rpc_client: Any) -> Any:
     
     This is called on the CHILD side after receiving results from host.
     ModelPatcherRef markers are converted to ModelPatcherProxy instances.
+    CLIPRef markers are converted to CLIPProxy instances.
     
     Args:
         data: Result from host RPC call
@@ -165,13 +203,26 @@ def deserialize_proxy_result(data: Any, rpc_client: Any) -> Any:
     Returns:
         Deserialized structure with proxy instances
     """
-    if isinstance(data, dict) and data.get("__type__") == "ModelPatcherRef":
-        # Import here to avoid circular dependency
-        from comfy.isolation.model_proxy import ModelPatcherProxy
+    if isinstance(data, dict):
+        ref_type = data.get("__type__")
         
-        model_id = data["model_id"]
-        logger.debug(f"📚 [Serialization] ModelPatcherRef({model_id}) → ModelPatcherProxy")
-        return ModelPatcherProxy(model_id, rpc_client)
+        if ref_type == "ModelPatcherRef":
+            # Import here to avoid circular dependency
+            from comfy.isolation.model_proxy import ModelPatcherProxy
+            
+            model_id = data["model_id"]
+            logger.debug(f"📚 [Serialization] ModelPatcherRef({model_id}) → ModelPatcherProxy")
+            return ModelPatcherProxy(model_id, rpc_client)
+        
+        elif ref_type == "CLIPRef":
+            # Import here to avoid circular dependency
+            from comfy.isolation.clip_proxy import CLIPProxy
+            
+            clip_id = data["clip_id"]
+            logger.debug(f"📚 [Serialization] CLIPRef({clip_id}) → CLIPProxy")
+            # Child-side proxy - registry will be resolved dynamically
+            # No lifecycle management in child
+            return CLIPProxy(clip_id, registry=None, manage_lifecycle=False)
     
     elif isinstance(data, dict):
         return {k: deserialize_proxy_result(v, rpc_client) for k, v in data.items()}
