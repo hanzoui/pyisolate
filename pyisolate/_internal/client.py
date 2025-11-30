@@ -14,8 +14,18 @@ from ..path_helpers import build_child_sys_path
 from ..shared import ExtensionBase
 from .shared import AsyncRPC
 
+# Configure child process logging to forward to parent's stdout
+# This must happen BEFORE any logging occurs in the child
+if os.environ.get("PYISOLATE_CHILD"):
+    logging.basicConfig(
+        level=logging.INFO,
+        format='📚 %(name)s - %(levelname)s - %(message)s',
+        stream=sys.stdout,
+        force=True
+    )
+
 logger = logging.getLogger(__name__)
-PATH_LOGGING_ENABLED = os.environ.get("PYISOLATE_PATH_DEBUG") == "1"
+PATH_LOGGING_ENABLED = bool(os.environ.get("PYISOLATE_PATH_DEBUG"))
 
 
 def _log_paths(unified_path: list[str]) -> None:
@@ -32,7 +42,15 @@ def _log_paths(unified_path: list[str]) -> None:
 
 # Apply host sys.path snapshot immediately on module import if we're a PyIsolate child
 # This must happen BEFORE any other ComfyUI imports during multiprocessing spawn
-if os.environ.get("PYISOLATE_CHILD") == "1":
+if os.environ.get("PYISOLATE_CHILD"):
+    # Configure logging FIRST - before any other imports that might log
+    logging.basicConfig(
+        level=logging.INFO,
+        format='📚 %(name)s - %(levelname)s - %(message)s',
+        stream=sys.stdout,
+        force=True  # Override any existing config
+    )
+    
     snapshot_path = os.environ.get("PYISOLATE_HOST_SNAPSHOT")
     if snapshot_path and Path(snapshot_path).exists():
         try:
@@ -158,6 +176,15 @@ async def async_entrypoint(
             rpc.register_callee(extension, "extension")
             for api in config["apis"]:
                 api.use_remote(rpc)
+
+                # Install RPC log handler if this is LoggingRegistry
+                if api.__name__ == "LoggingRegistry":
+                    try:
+                        from comfy.isolation.proxies.logging_proxy import install_rpc_log_handler
+                        install_rpc_log_handler()
+                        logger.info("📚 [PyIsolate][Client] RPC log handler installed")
+                    except Exception as e:
+                        logger.warning(f"📚 [PyIsolate][Client] Failed to install RPC log handler: {e}")
 
                 # Patch PromptServer.instance.register_route if it's the PromptServer proxy
                 if api.__name__ == "PromptServerProxy":
