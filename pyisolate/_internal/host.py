@@ -228,7 +228,101 @@ class Extension(Generic[T]):
 
             self.mp = multiprocessing
             logger.debug("📚 [PyIsolate][Extension] Using multiprocessing for %s", self.name)
-
+        
+        # Initialize the isolated process
+        self._initialize_process()
+    
+    def _filter_already_satisfied(self, requirements: list[str], python_exe: Path) -> list[str]:
+        """Filter requirements list to exclude packages already satisfied in the venv.
+        
+        When share_torch=true, the venv has --system-site-packages, so torch and its
+        dependencies from the host are visible. We check what's already installed and
+        skip those packages to avoid redundant downloads.
+        
+        Args:
+            requirements: List of package specifications from pyisolate.yaml
+            python_exe: Path to venv python executable
+            
+        Returns:
+            Filtered list of requirements that still need installation
+        """
+        import subprocess
+        from packaging.requirements import Requirement
+        from packaging.specifiers import SpecifierSet
+        
+        # Get all installed packages in venv (including system-site-packages)
+        result = subprocess.run(
+            [str(python_exe), "-m", "pip", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        installed = {pkg["name"].lower(): pkg["version"] for pkg in json.loads(result.stdout)}
+        
+        # Torch-related packages that should never be installed when share_torch=true
+        TORCH_ECOSYSTEM = {
+            'torch', 'torchvision', 'torchaudio', 'torchtext', 'triton',
+            'nvidia-cuda-runtime-cu12', 'nvidia-cuda-nvrtc-cu12', 'nvidia-cudnn-cu12',
+            'nvidia-cublas-cu12', 'nvidia-cufft-cu12', 'nvidia-curand-cu12',
+            'nvidia-cusolver-cu12', 'nvidia-cusparse-cu12', 'nvidia-nccl-cu12',
+            'nvidia-nvtx-cu12', 'nvidia-nvjitlink-cu12', 'nvidia-cuda-cupti-cu12',
+            'nvidia-cusparselt-cu12', 'nvidia-nvshmem-cu12', 'nvidia-cufile-cu12'
+        }
+        
+        filtered = []
+        for req_str in requirements:
+            try:
+                req = Requirement(req_str)
+                pkg_name_lower = req.name.lower()
+                
+                # Skip torch ecosystem packages when share_torch=true
+                if self.config["share_torch"] and pkg_name_lower in TORCH_ECOSYSTEM:
+                    logger.info(
+                        "📚 [PyIsolate][Deps] ⏭️  Skipping %s (torch ecosystem, inherited from host)",
+                        req.name
+                    )
+                    continue
+                
+                # Check if package is installed and version satisfies requirement
+                if pkg_name_lower in installed:
+                    installed_version = installed[pkg_name_lower]
+                    if not req.specifier or installed_version in req.specifier:
+                        logger.info(
+                            "📚 [PyIsolate][Deps] ⏭️  Skipping %s==%s (already satisfied)",
+                            req.name,
+                            installed_version
+                        )
+                        continue
+                    else:
+                        logger.debug(
+                            "📚 [PyIsolate][Deps] Version mismatch: %s installed=%s required=%s",
+                            req.name,
+                            installed_version,
+                            req.specifier
+                        )
+                
+                filtered.append(req_str)
+                
+            except Exception as e:
+                # If we can't parse, include it to be safe
+                logger.warning(
+                    "📚 [PyIsolate][Deps] Could not parse requirement '%s': %s (including anyway)",
+                    req_str,
+                    e
+                )
+                filtered.append(req_str)
+        
+        if len(filtered) < len(requirements):
+            logger.info(
+                "📚 [PyIsolate][Deps] Filtered %d/%d requirements (already satisfied)",
+                len(requirements) - len(filtered),
+                len(requirements)
+            )
+        
+        return filtered
+    
+    def _initialize_process(self) -> None:
+        """Initialize the isolated process with queues and RPC."""
         start_method = self.mp.get_start_method(allow_none=True)
         if start_method is None:
             self.mp.set_start_method("spawn")
@@ -254,7 +348,7 @@ class Extension(Generic[T]):
             logger.error("📚 [PyIsolate][Extension] Launch failed for %s: %s", self.name, exc)
             raise
         self.rpc = AsyncRPC(recv_queue=self.from_extension, send_queue=self.to_extension)
-        for api in config["apis"]:
+        for api in self.config["apis"]:
             api()._register(self.rpc)
         self.rpc.run()
 
@@ -394,18 +488,68 @@ class Extension(Generic[T]):
                 self.config["share_torch"],
             )
 
-            # Always use sys.executable (host Python) to create venv
-            # This ensures --system-site-packages inherits from the correct environment
-            cmd = [sys.executable, "-m", "venv"]
+            # Create venv using host Python
+            # CRITICAL ARCHITECTURE CHANGE:
+            # We do NOT use --system-site-packages because it points to /usr/bin (system python),
+            # causing us to inherit broken system packages (like matplotlib) instead of our parent venv.
+            # Instead, we create a clean venv and inject the parent venv via a .pth file.
+            cmd = [sys.executable, "-m", "venv", str(self.venv_path)]
             
-            # Add --system-site-packages when sharing torch
-            if self.config["share_torch"]:
-                cmd.append("--system-site-packages")
-            
-            cmd.append(str(self.venv_path))
             logger.debug("📚 [PyIsolate][Venv] Running: %s", " ".join(cmd))
             try:
                 subprocess.check_call(cmd)  # noqa: S603
+                
+                # Configure inheritance via .pth file injection
+                if self.config["share_torch"]:
+                    import site
+                    
+                    # 1. Identify child site-packages directory
+                    if os.name == "nt":
+                        child_site = self.venv_path / "Lib" / "site-packages"
+                    else:
+                        # POSIX: lib/pythonX.Y/site-packages
+                        version_info = sys.version_info
+                        child_site = self.venv_path / "lib" / f"python{version_info.major}.{version_info.minor}" / "site-packages"
+                    
+                    if not child_site.exists():
+                        # Fallback discovery if path structure differs
+                        logger.warning("📚 [PyIsolate][Venv] Standard site-packages path not found at %s, probing...", child_site)
+                        # This is rare for standard venv, but safety first
+                        found = list(self.venv_path.glob("**/site-packages"))
+                        if found:
+                            child_site = found[0]
+                        else:
+                            raise RuntimeError(f"Could not locate site-packages in new venv: {self.venv_path}")
+
+                    # 2. Identify parent site-packages (from current host process)
+                    # We want the primary site-packages of the host venv
+                    parent_sites = site.getsitepackages()
+                    # Filter for the one inside our .venv_golden (host)
+                    # Usually the first one, but let's be precise
+                    host_prefix = sys.prefix
+                    valid_parents = [p for p in parent_sites if p.startswith(host_prefix)]
+                    
+                    if not valid_parents:
+                        # Fallback: use the first one or sys.path calculation
+                        logger.warning("📚 [PyIsolate][Venv] Could not strictly identify parent site-packages in %s, using sys.path heuristic", parent_sites)
+                        valid_parents = [p for p in sys.path if "site-packages" in p and p.startswith(host_prefix)]
+                    
+                    if not valid_parents:
+                         raise RuntimeError("Could not determine parent site-packages path to inherit")
+
+                    parent_site = valid_parents[0]
+                    
+                    # 3. Write the .pth file
+                    # Using site.addsitedir() ensures .pth files in the parent are processed too
+                    pth_content = f"import site; site.addsitedir(r'{parent_site}')\n"
+                    pth_file = child_site / "_pyisolate_parent.pth"
+                    pth_file.write_text(pth_content)
+                    
+                    logger.info(
+                        "📚 [PyIsolate][Venv] ✅ Configured inheritance: Child -> %s",
+                        parent_site
+                    )
+                
                 logger.info("📚 [PyIsolate][Venv] ✅ Created venv at %s", self.venv_path)
             except subprocess.CalledProcessError as e:
                 logger.error("📚 [PyIsolate][Venv] ❌ Failed to create venv: %s", e)
@@ -437,6 +581,10 @@ class Extension(Generic[T]):
             validate_dependency(dep)
             safe_dependencies.append(dep)
 
+        # Filter requirements to exclude packages already satisfied by host environment
+        if self.config["share_torch"] and safe_dependencies:
+            safe_dependencies = self._filter_already_satisfied(safe_dependencies, python_executable)
+        
         install_required = bool(safe_dependencies) or self.config["share_torch"]
         if not install_required:
             logger.debug("📚 [PyIsolate][Deps] No dependencies to install for %s", self.name)
@@ -484,13 +632,25 @@ class Extension(Generic[T]):
             common_args = []
 
         torch_spec: Optional[str] = None
+        torch_constraint_file: Optional[Path] = None
+        
         # When share_torch=true, PyTorch is inherited via --system-site-packages
         # Only install torch explicitly when NOT sharing (fully isolated mode)
         if self.config["share_torch"]:
+            # Torch is inherited via --system-site-packages (venv created with this flag)
+            # UV should see it's already available and skip downloading
+            import torch
+            torch_version = torch.__version__
+            if torch_version.endswith("+cpu"):
+                torch_version = torch_version[:-4]
+            
             logger.info(
-                "📚 [PyIsolate][Deps] Skipping torch install for %s (inherited from host via --system-site-packages)",
+                "📚 [PyIsolate][Deps] Skipping torch install for %s (inherited from host via --system-site-packages at %s)",
                 self.name,
+                torch_version,
             )
+            # Note: No override file needed - venv already has access to torch via system-site-packages
+            # This makes torch available both for package resolution AND for build-time imports
         else:
             # Fully isolated mode: install torch in isolated venv
             import torch
