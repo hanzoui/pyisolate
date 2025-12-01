@@ -343,17 +343,38 @@ class Extension(Generic[T]):
     
     def _initialize_process(self) -> None:
         """Initialize the isolated process with queues and RPC."""
-        start_method = self.mp.get_start_method(allow_none=True)
-        if start_method is None:
-            self.mp.set_start_method("spawn")
-            logger.debug("📚 [PyIsolate][Extension] Start method set to spawn for %s", self.name)
-        elif start_method != "spawn":
+        # Use get_context instead of set_start_method for better isolation
+        # and to avoid "context already set" errors
+        try:
+            self.ctx = self.mp.get_context("spawn")
+        except ValueError as e:
             raise RuntimeError(
-                f"Invalid start method {start_method} for pyisolate. "
+                f"Failed to get 'spawn' context for pyisolate: {e}. "
                 "Pyisolate requires the 'spawn' start method to work correctly."
-            )
-        self.to_extension = self.mp.Queue()
-        self.from_extension = self.mp.Queue()
+            ) from e
+        logger.debug("📚 [PyIsolate][Extension] Using spawn context for %s", self.name)
+        
+        # Use Manager-based queues for Windows cross-venv compatibility
+        # Direct Queue passing fails on Windows with set_executable() due to
+        # handle inheritance issues (WinError 5: Access Denied on semaphores)
+        #
+        # CRITICAL: Set PYISOLATE_CHILD=1 BEFORE creating Manager!
+        # On Windows, Manager.start() spawns a new process that re-runs main.py.
+        # Without this env var, ComfyUI's IS_PRIMARY_PROCESS check fails and it
+        # tries to start the full server, causing import errors.
+        import multiprocessing as std_mp
+        os.environ["PYISOLATE_CHILD"] = "1"
+        try:
+            std_ctx = std_mp.get_context("spawn")
+            self.manager = std_ctx.Manager()
+            logger.debug("📚 [PyIsolate][Extension] Manager started for %s", self.name)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to start multiprocessing Manager for {self.name}: {e}"
+            ) from e
+        
+        self.to_extension = self.manager.Queue()
+        self.from_extension = self.manager.Queue()
         self.extension_proxy = None
         logger.debug(
             "📚 [PyIsolate][Extension] Preparing extension name=%s normalized=%s venv=%s module_path=%s",
@@ -409,6 +430,16 @@ class Extension(Generic[T]):
                 logger.error(detail)
                 errors.append(detail)
 
+        # Shutdown the Manager (required for Windows Manager-based queues)
+        if hasattr(self, "manager") and self.manager is not None:
+            try:
+                self.manager.shutdown()
+                logger.debug("📚 [PyIsolate][Extension] Manager shutdown for %s", self.name)
+            except Exception as exc:  # pragma: no cover
+                detail = f"Failed to shutdown manager for {self.name}: {exc}"
+                logger.error(detail)
+                errors.append(detail)
+
         if errors:
             raise RuntimeError("; ".join(errors))
     def __launch(self):
@@ -422,7 +453,10 @@ class Extension(Generic[T]):
         self._install_dependencies()
 
         # Set the Python executable from the virtual environment
-        executable = sys._base_executable if os.name == "nt" else str(self.venv_path / "bin" / "python")
+        if os.name == "nt":
+            executable = str(self.venv_path / "Scripts" / "python.exe")
+        else:
+            executable = str(self.venv_path / "bin" / "python")
         logger.debug(
             "📚 [PyIsolate][Extension] Launching %s via executable=%s share_torch=%s",
             self.name,
@@ -455,7 +489,8 @@ class Extension(Generic[T]):
                         VIRTUAL_ENV=str(self.venv_path),
                     )
                 )
-            proc = self.mp.Process(
+            # Use context-based Process for consistent spawn behavior
+            proc = self.ctx.Process(
                 target=entrypoint,
                 args=(
                     self.module_path,
