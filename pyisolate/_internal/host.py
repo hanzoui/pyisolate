@@ -271,6 +271,26 @@ class Extension(Generic[T]):
         
         filtered = []
         for req_str in requirements:
+            # Handle editable installs (-e path) - pass through unchanged
+            req_str_stripped = req_str.strip()
+            if req_str_stripped.startswith('-e ') or req_str_stripped == '-e':
+                # Editable install - always include, skip parsing
+                logger.debug(
+                    "📚 [PyIsolate][Deps] Passing through editable install: %s",
+                    req_str
+                )
+                filtered.append(req_str)
+                continue
+            
+            # Handle bare paths (editable without -e flag or local installs)
+            if req_str_stripped.startswith('/') or req_str_stripped.startswith('./'):
+                logger.debug(
+                    "📚 [PyIsolate][Deps] Passing through local path install: %s",
+                    req_str
+                )
+                filtered.append(req_str)
+                continue
+            
             try:
                 req = Requirement(req_str)
                 pkg_name_lower = req.name.lower()
@@ -634,25 +654,12 @@ class Extension(Generic[T]):
         torch_spec: Optional[str] = None
         torch_constraint_file: Optional[Path] = None
         
-        # When share_torch=true, PyTorch is inherited via --system-site-packages
-        # Only install torch explicitly when NOT sharing (fully isolated mode)
         if self.config["share_torch"]:
-            # Torch is inherited via --system-site-packages (venv created with this flag)
-            # UV should see it's already available and skip downloading
             import torch
             torch_version = torch.__version__
             if torch_version.endswith("+cpu"):
-                torch_version = torch_version[:-4]
-            
-            logger.info(
-                "📚 [PyIsolate][Deps] Skipping torch install for %s (inherited from host via --system-site-packages at %s)",
-                self.name,
-                torch_version,
-            )
-            # Note: No override file needed - venv already has access to torch via system-site-packages
-            # This makes torch available both for package resolution AND for build-time imports
+                torch_version = torch_version[:-4]         
         else:
-            # Fully isolated mode: install torch in isolated venv
             import torch
 
             torch_version = torch.__version__

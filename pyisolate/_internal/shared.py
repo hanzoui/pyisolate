@@ -57,24 +57,36 @@ def _tensor_to_cpu(obj: Any) -> Any:
     
     Also handles custom object serialization (e.g., ModelPatcher for ComfyUI).
     """
+    type_name = type(obj).__name__
+    
     # Custom serialization hook for ModelPatcher (ComfyUI integration)
-    if type(obj).__name__ == 'ModelPatcher':
+    if type_name == 'ModelPatcher':
         try:
-            from comfy.isolation.model_registry import get_current_registry_if_exists
-            registry = get_current_registry_if_exists()
-            if registry is not None:
-                model_id = registry.register(obj)
-                logger.info(f"📚 [PyIsolate][Serialization] ModelPatcher → ref {model_id}")
-                return {
-                    "__type__": "ModelPatcherRef",
-                    "model_id": model_id,
-                }
-            else:
-                logger.warning(f"📚 [PyIsolate][Serialization] No registry available for ModelPatcher serialization")
+            from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
+            registry = ModelPatcherRegistry()
+            model_id = registry.register(obj)
+            logger.info(f"📚 [PyIsolate][Serialization] ModelPatcher → ref {model_id}")
+            return {
+                "__type__": "ModelPatcherRef",
+                "model_id": model_id,
+            }
         except ImportError as e:
             logger.warning(f"📚 [PyIsolate][Serialization] ComfyUI integration not available: {e}")
         except Exception as e:
             logger.error(f"📚 [PyIsolate][Serialization] Failed to serialize ModelPatcher: {e}")
+    
+    # Handle ModelPatcherProxy - convert to ref (child returning proxy to host)
+    if type_name == 'ModelPatcherProxy':
+        try:
+            # Proxy already has an instance_id - just convert to ref
+            model_id = obj._instance_id
+            logger.info(f"📚 [PyIsolate][Serialization] ModelPatcherProxy → ref {model_id}")
+            return {
+                "__type__": "ModelPatcherRef",
+                "model_id": model_id,
+            }
+        except Exception as e:
+            logger.error(f"📚 [PyIsolate][Serialization] Failed to serialize ModelPatcherProxy: {e}")
     
     # Also check for model_sampling attribute (nested pickle issue)
     if hasattr(obj, 'model_sampling') and type(obj.model_sampling).__name__ == 'ModelSampling':
@@ -113,33 +125,24 @@ def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
             
             if is_child:
                 # Child-side: deserialize ref to ModelPatcherProxy
-                from comfy.isolation.model_proxy import ModelPatcherProxy
+                from comfy.isolation.model_patcher_proxy import ModelPatcherProxy
                 
-                # Try current context first, then fall back to global instance
-                rpc = current_rpc_context.get()
-                if rpc is None:
-                    rpc = get_child_rpc_instance()
-                
-                if rpc is not None:
-                    model_id = obj["model_id"]
-                    logger.info(f"📚 [PyIsolate][Deserialization] ref {model_id} → ModelPatcherProxy (child)")
-                    return ModelPatcherProxy(model_id, rpc)
-                else:
-                    logger.error(f"📚 [PyIsolate][Deserialization] No RPC available for proxy creation")
+                model_id = obj["model_id"]
+                logger.info(f"📚 [PyIsolate][Deserialization] ref {model_id} → ModelPatcherProxy (child)")
+                # Child-side proxy - registry resolved dynamically, no lifecycle management
+                return ModelPatcherProxy(model_id, registry=None, manage_lifecycle=False)
             else:
-                # Host-side: deserialize ref back to real ModelPatcher
-                from comfy.isolation.model_registry import get_current_registry_if_exists
-                registry = get_current_registry_if_exists()
-                if registry is not None:
-                    model_id = obj["model_id"]
-                    patcher = registry.get(model_id)
-                    if patcher is not None:
-                        logger.debug(f"📚 [PyIsolate][Deserialization] ref {model_id} → ModelPatcher (host)")
-                        return patcher
-                    else:
-                        logger.warning(f"📚 [PyIsolate][Deserialization] ModelPatcher {model_id} not found in registry")
+                # Host-side: deserialize ref back to real ModelPatcher via registry
+                from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
+                registry = ModelPatcherRegistry()
+                model_id = obj["model_id"]
+                patcher = registry._get_instance(model_id)
+                logger.debug(f"📚 [PyIsolate][Deserialization] ref {model_id} → ModelPatcher (host)")
+                return patcher
         except ImportError as e:
             logger.debug(f"📚 [PyIsolate][Deserialization] ComfyUI integration not available: {e}")
+        except ValueError as e:
+            logger.warning(f"📚 [PyIsolate][Deserialization] {e}")
     
     if isinstance(obj, dict):
         return {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
