@@ -102,10 +102,48 @@ def _tensor_to_cpu(obj: Any) -> Any:
         pass
     
     if isinstance(obj, dict):
+        # Check if this is a dict subclass from a custom module
+        dict_class = type(obj)
+        dict_module = getattr(dict_class, '__module__', '') or ''
+        if dict_class is not dict and dict_module and not dict_module.startswith(('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing')):
+            # Custom dict subclass - convert to plain dict
+            logger.warning(
+                f"📚 [PyIsolate][Serialization] Converting {dict_class.__name__} from {dict_module} to plain dict"
+            )
+            return {k: _tensor_to_cpu(v) for k, v in obj.items()}
         return {k: _tensor_to_cpu(v) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
+        # Check if this is a list/tuple subclass from a custom module
+        seq_class = type(obj)
+        seq_module = getattr(seq_class, '__module__', '') or ''
+        if seq_class not in (list, tuple) and seq_module and not seq_module.startswith(('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing')):
+            # Custom sequence subclass - convert to plain list/tuple
+            logger.warning(
+                f"📚 [PyIsolate][Serialization] Converting {seq_class.__name__} from {seq_module} to plain sequence"
+            )
         converted = [_tensor_to_cpu(item) for item in obj]
-        return type(obj)(converted) if isinstance(obj, tuple) else converted
+        return tuple(converted) if isinstance(obj, tuple) else converted
+    
+    # Safety check: primitives pass through, complex objects need pickle validation
+    if isinstance(obj, (str, int, float, bool, type(None), bytes)):
+        return obj
+    
+    # Check if this object references a module that won't exist on the host
+    # Custom node modules (like ComfyUI_Lora_Manager) aren't available on host
+    obj_module = getattr(type(obj), '__module__', '') or ''
+    if obj_module and not obj_module.startswith(('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing', 'collections', 'abc')):
+        # This is likely a custom node object - convert to serializable form
+        type_name = type(obj).__name__
+        logger.warning(
+            f"📚 [PyIsolate][Serialization] Converting {type_name} from {obj_module} to string (pickle safety)"
+        )
+        return {
+            "__pyisolate_unpicklable__": True,
+            "type": type_name,
+            "module": obj_module,
+            "repr": str(obj)[:1000],  # Limit repr length
+        }
+    
     return obj
 
 
