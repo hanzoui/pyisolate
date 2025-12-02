@@ -7,13 +7,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from contextlib import ExitStack, contextmanager
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Generic, Optional, TypeVar
 
-from ..config import ExtensionConfig
+from ..config import ExtensionConfig, get_torch_ecosystem_packages
 from ..path_helpers import serialize_host_snapshot
 from ..shared import ExtensionBase
 from .client import entrypoint
@@ -264,15 +263,8 @@ class Extension(Generic[T]):
         )
         installed = {pkg["name"].lower(): pkg["version"] for pkg in json.loads(result.stdout)}
         
-        # Torch-related packages that should never be installed when share_torch=true
-        TORCH_ECOSYSTEM = {
-            'torch', 'torchvision', 'torchaudio', 'torchtext', 'triton',
-            'nvidia-cuda-runtime-cu12', 'nvidia-cuda-nvrtc-cu12', 'nvidia-cudnn-cu12',
-            'nvidia-cublas-cu12', 'nvidia-cufft-cu12', 'nvidia-curand-cu12',
-            'nvidia-cusolver-cu12', 'nvidia-cusparse-cu12', 'nvidia-nccl-cu12',
-            'nvidia-nvtx-cu12', 'nvidia-nvjitlink-cu12', 'nvidia-cuda-cupti-cu12',
-            'nvidia-cusparselt-cu12', 'nvidia-nvshmem-cu12', 'nvidia-cufile-cu12'
-        }
+        # Get torch ecosystem packages dynamically (adapts to any CUDA version)
+        torch_ecosystem = get_torch_ecosystem_packages()
         
         filtered = []
         for req_str in requirements:
@@ -293,7 +285,7 @@ class Extension(Generic[T]):
                 pkg_name_lower = req.name.lower()
                 
                 # Skip torch ecosystem packages when share_torch=true
-                if self.config["share_torch"] and pkg_name_lower in TORCH_ECOSYSTEM:
+                if self.config["share_torch"] and pkg_name_lower in torch_ecosystem:
                     continue
                 
                 # Check if package is installed and version satisfies requirement
@@ -509,11 +501,9 @@ class Extension(Generic[T]):
                 self.config["share_torch"],
             )
 
-            # Create venv using host Python
-            # CRITICAL ARCHITECTURE CHANGE:
-            # We do NOT use --system-site-packages because it points to /usr/bin (system python),
-            # causing us to inherit broken system packages (like matplotlib) instead of our parent venv.
-            # Instead, we create a clean venv and inject the parent venv via a .pth file.
+            # Create venv using host Python.
+            # We avoid --system-site-packages as it inherits /usr/bin packages, not the parent venv.
+            # Instead, we inject parent venv access via a .pth file for controlled inheritance.
             cmd = [sys.executable, "-m", "venv", str(self.venv_path)]
             
             try:

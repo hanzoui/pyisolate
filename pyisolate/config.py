@@ -1,9 +1,57 @@
 from __future__ import annotations
 
+import functools
+import logging
+from importlib import metadata as importlib_metadata
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from ._internal.shared import ProxiedSingleton
+
+logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def get_torch_ecosystem_packages() -> frozenset[str]:
+    """Dynamically discover torch ecosystem packages from the host environment.
+    
+    Queries installed packages matching torch*, nvidia-*, and triton* patterns.
+    This ensures compatibility with any CUDA version (cu11, cu12, cu13+).
+    
+    Returns:
+        Frozen set of package names that should never be installed in isolated venvs
+        when share_torch=true.
+    """
+    packages: set[str] = set()
+    
+    # Core torch packages (always excluded)
+    core_torch = {'torch', 'torchvision', 'torchaudio', 'torchtext', 'triton'}
+    packages.update(core_torch)
+    
+    try:
+        for dist in importlib_metadata.distributions():
+            name = dist.metadata.get('Name', '').lower()
+            # Match nvidia-* packages (CUDA runtime, cuDNN, etc.)
+            if name.startswith('nvidia-'):
+                packages.add(name)
+            # Match any torch-related packages we might have missed
+            elif name.startswith('torch') and name not in core_torch:
+                packages.add(name)
+            # Match triton variants
+            elif name.startswith('triton'):
+                packages.add(name)
+    except Exception as e:
+        logger.warning("📚 [PyIsolate][Config] Failed to enumerate packages: %s", e)
+        # Fall back to core packages only
+    
+    result = frozenset(packages)
+    if len(result) > len(core_torch):
+        logger.debug(
+            "📚 [PyIsolate][Config] Discovered %d torch ecosystem packages",
+            len(result)
+        )
+    
+    return result
 
 
 class ExtensionManagerConfig(TypedDict):
