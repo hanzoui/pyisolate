@@ -157,8 +157,8 @@ class ExtensionManager(Generic[T]):
             raise
 
         self.extensions[name] = extension
-        proxy = extension.get_proxy()
-
+        
+        # Create a lazy proxy wrapper that starts the process only when needed
         class HostExtension(ExtensionLocal):
             """Proxy class for the extension to provide a consistent interface.
 
@@ -167,10 +167,22 @@ class ExtensionManager(Generic[T]):
             local ones from the host's perspective.
             """
 
-            def __init__(self, rpc, proxy, extension) -> None:
+            def __init__(self, extension_instance) -> None:
                 super().__init__()
-                self.proxy = proxy
-                self._extension = extension
+                self._extension = extension_instance
+                self._proxy = None
+
+            @property
+            def proxy(self):
+                if self._proxy is None:
+                    # Ensure process is started before getting proxy
+                    if hasattr(self._extension, "ensure_process_started"):
+                        self._extension.ensure_process_started()
+                    
+                    self._proxy = self._extension.get_proxy()
+                    # Initialize RPC on self now that we have it
+                    self._initialize_rpc(self._extension.rpc)
+                return self._proxy
 
             def __getattr__(self, item: str):
                 """Delegate attribute access to the extension's proxy object.
@@ -178,10 +190,17 @@ class ExtensionManager(Generic[T]):
                 This allows the host to call any method defined on the extension
                 as if it were a local object.
                 """
+                # First check if the underlying Extension object has this attribute
+                # This exposes methods like ensure_process_started() and list_nodes()
+                # directly from the host wrapper
+                if hasattr(self._extension, item):
+                    return getattr(self._extension, item)
+                
+                # Otherwise delegate to the RPC proxy (triggering spawn if needed)
                 return getattr(self.proxy, item)
 
-        host_extension = HostExtension(extension.rpc, proxy, extension)
-        host_extension._initialize_rpc(extension.rpc)
+        host_extension = HostExtension(extension)
+        
         logger.debug(
             "📚 [PyIsolate][ExtensionManager] Extension %s ready (venv=%s)",
             name,

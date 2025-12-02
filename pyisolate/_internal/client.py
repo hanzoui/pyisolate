@@ -66,7 +66,12 @@ if os.environ.get("PYISOLATE_CHILD"):
         
         def filter(self, record: logging.LogRecord) -> bool:
             msg = record.getMessage()
-            return not any(pattern in msg for pattern in self._SUPPRESS_PATTERNS)
+            if any(pattern in msg for pattern in self._SUPPRESS_PATTERNS):
+                # Emit dot to stderr to show life without noise
+                sys.stderr.write(".")
+                sys.stderr.flush()
+                return False
+            return True
     
     logging.getLogger().addFilter(_ChildLogFilter())
     

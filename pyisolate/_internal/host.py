@@ -223,9 +223,20 @@ class Extension(Generic[T]):
 
             self.mp = multiprocessing
         
-        # Initialize the isolated process
-        self._initialize_process()
+        # Initialize the isolated process lazily
+        self._process_initialized = False
     
+    def ensure_process_started(self) -> None:
+        """Start the isolated process if not already running."""
+        if self._process_initialized:
+            return
+        
+        # Loudly announce spawn to prevent "hang" perception
+        logger.info(f"🚀 [PyIsolate] Spawning isolated process for {self.name}... (First run only)")
+        
+        self._initialize_process()
+        self._process_initialized = True
+
     def _filter_already_satisfied(self, requirements: list[str], python_exe: Path) -> list[str]:
         """Filter requirements list to exclude packages already satisfied in the venv.
         
@@ -336,8 +347,17 @@ class Extension(Generic[T]):
                 f"Failed to start multiprocessing Manager for {self.name}: {e}"
             ) from e
         
-        self.to_extension = self.manager.Queue()
-        self.from_extension = self.manager.Queue()
+        # Use standard multiprocessing Queues instead of Manager Queues on Linux
+        # Manager Queues are slower and more brittle (AutoProxy issues)
+        # Only use Manager on Windows where handle inheritance is tricky
+        if os.name == "nt":
+            self.to_extension = self.manager.Queue()
+            self.from_extension = self.manager.Queue()
+        else:
+            # On Linux/macOS, standard queues work fine with spawn and are faster/safer
+            self.to_extension = self.ctx.Queue()
+            self.from_extension = self.ctx.Queue()
+            
         self.extension_proxy = None
         try:
             self.proc = self.__launch()
@@ -396,6 +416,9 @@ class Extension(Generic[T]):
 
         if errors:
             raise RuntimeError("; ".join(errors))
+        
+        self._process_initialized = False
+
     def __launch(self):
         """
         Launch the extension in a separate process.
