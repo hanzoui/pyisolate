@@ -49,6 +49,31 @@ if os.environ.get("PYISOLATE_CHILD"):
         force=True  # Override any existing config
     )
     
+    # Suppress noisy ComfyUI startup logs in child processes
+    # These have zero informational value when repeated per-child
+    class _ChildLogFilter(logging.Filter):
+        """Filter out noisy ComfyUI startup messages in child processes."""
+        _SUPPRESS_PATTERNS = (
+            "Total VRAM",
+            "pytorch version:",
+            "Set vram state to:",
+            "Device: cuda",
+            "Enabled pinned memory",
+            "Checkpoint files will always",
+            "working around nvidia",
+            "Using pytorch attention",
+        )
+        
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return not any(pattern in msg for pattern in self._SUPPRESS_PATTERNS)
+    
+    logging.getLogger().addFilter(_ChildLogFilter())
+    
+    # Suppress pynvml deprecation warnings in child processes
+    import warnings
+    warnings.filterwarnings("ignore", message=".*pynvml package is deprecated.*")
+    
     snapshot_path = os.environ.get("PYISOLATE_HOST_SNAPSHOT")
     if snapshot_path and Path(snapshot_path).exists():
         try:
