@@ -32,12 +32,10 @@ def _log_paths(unified_path: list[str]) -> None:
     if not PATH_LOGGING_ENABLED:
         return
     logger.debug(
-        "📚 [PyIsolate][PathUnification] === FULL sys.path (total=%d) ===",
+        "📚 [PyIsolate][PathUnification] sys.path (%d entries):\n%s",
         len(unified_path),
+        "\n".join(f"  [{i}] {p}" for i, p in enumerate(unified_path))
     )
-    for idx, path in enumerate(unified_path):
-        logger.debug("📚 [PyIsolate][PathUnification]   [%d] %s", idx, path)
-    logger.debug("📚 [PyIsolate][PathUnification] === END sys.path ===")
 
 
 # Apply host sys.path snapshot immediately on module import if we're a PyIsolate child
@@ -81,8 +79,6 @@ if os.environ.get("PYISOLATE_CHILD"):
             sys.path.extend(unified_path)
             
             # Test utils import immediately after path configuration
-            if PATH_LOGGING_ENABLED:
-                logger.debug("📚 [PyIsolate][PathUnification] Testing utils.json_util import...")
             try:
                 import utils.json_util  # noqa: F401
             except Exception as import_err:
@@ -91,24 +87,8 @@ if os.environ.get("PYISOLATE_CHILD"):
                         "📚 [PyIsolate][PathUnification] ❌ utils.json_util import FAILED: %s",
                         import_err,
                     )
-                    logger.debug(
-                        "📚 [PyIsolate][PathUnification] Checking if 'utils' is importable..."
-                    )
                 try:
                     import utils as utils_test
-                    if PATH_LOGGING_ENABLED:
-                        logger.debug(
-                            "📚 [PyIsolate][PathUnification] 'utils' found at: %s",
-                            getattr(utils_test, "__file__", "NO __file__"),
-                        )
-                        logger.debug(
-                            "📚 [PyIsolate][PathUnification] 'utils' package: %s",
-                            getattr(utils_test, "__package__", "NO __package__"),
-                        )
-                        logger.debug(
-                            "📚 [PyIsolate][PathUnification] 'utils' path: %s",
-                            getattr(utils_test, "__path__", "NO __path__"),
-                        )
                 except Exception as utils_err:
                     if PATH_LOGGING_ENABLED:
                         logger.debug(
@@ -117,17 +97,7 @@ if os.environ.get("PYISOLATE_CHILD"):
                         )
                     raise
                 raise
-            else:
-                if PATH_LOGGING_ENABLED:
-                    logger.debug(
-                        "📚 [PyIsolate][PathUnification] ✅ utils.json_util import SUCCESS"
-                    )
 
-            logger.info(
-                "📚 [PyIsolate][Client] Applied host snapshot on module import (comfy_root=%s, paths=%d)",
-                comfy_root,
-                len(unified_path),
-            )
         except Exception as e:
             logger.error("📚 [PyIsolate][Client] Failed to apply host snapshot on import: %s", e)
             raise
@@ -143,13 +113,6 @@ async def async_entrypoint(
     """
     Asynchronous entrypoint for the module.
     """
-    logger.info(
-        "📚 [PyIsolate][Client] Starting async_entrypoint module_path=%s executable=%s share_torch=%s",
-        module_path,
-        sys.executable,
-        config["share_torch"],
-    )
-
     rpc = AsyncRPC(recv_queue=to_extension, send_queue=from_extension)
     
     # Store RPC globally for deserialization use
@@ -182,7 +145,6 @@ async def async_entrypoint(
                     try:
                         from comfy.isolation.proxies.logging_proxy import install_rpc_log_handler
                         install_rpc_log_handler()
-                        logger.info("📚 [PyIsolate][Client] RPC log handler installed")
                     except Exception as e:
                         logger.warning(f"📚 [PyIsolate][Client] Failed to install RPC log handler: {e}")
 
@@ -195,9 +157,6 @@ async def async_entrypoint(
                         original_register_route = proxy.register_route
 
                         def register_route_wrapper(method, path, handler):
-                            logger.info(
-                                "📚 [PyIsolate][Client] Registering callback route: %s", path
-                            )
                             callback_id = rpc.register_callback(handler)
 
                             loop = asyncio.get_event_loop()
@@ -259,9 +218,6 @@ async def async_entrypoint(
                         if hasattr(server, "PromptServer"):
                             if getattr(server.PromptServer, "instance", None) != proxy:
                                 server.PromptServer.instance = proxy
-                                logger.info(
-                                    "📚 [PyIsolate][Client] Injected proxy into server.PromptServer.instance"
-                                )
                     except Exception as e:
                         logger.warning(f"📚 [PyIsolate][Client] Failed to patch PromptServer: {e}")
 

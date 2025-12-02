@@ -197,15 +197,11 @@ class Extension(Generic[T]):
 
         # Log if normalization changed the name
         if self.normalized_name != self.name:
-            logger.debug(
-                f"Extension name '{self.name}' normalized to '{self.normalized_name}' "
-                "for filesystem compatibility"
-            )
+            pass
 
         # Validate all dependencies
         for dep in config["dependencies"]:
             validate_dependency(dep)
-            logger.debug("📚 [PyIsolate][Extension] Dependency validated name=%s dep=%s", self.name, dep)
 
         # Use Path for safer path operations with normalized name
         venv_root = Path(venv_root_path).resolve()
@@ -222,12 +218,10 @@ class Extension(Generic[T]):
             import torch.multiprocessing
 
             self.mp = torch.multiprocessing
-            logger.debug("📚 [PyIsolate][Extension] Using torch.multiprocessing for %s", self.name)
         else:
             import multiprocessing
 
             self.mp = multiprocessing
-            logger.debug("📚 [PyIsolate][Extension] Using multiprocessing for %s", self.name)
         
         # Initialize the isolated process
         self._initialize_process()
@@ -275,19 +269,11 @@ class Extension(Generic[T]):
             req_str_stripped = req_str.strip()
             if req_str_stripped.startswith('-e ') or req_str_stripped == '-e':
                 # Editable install - always include, skip parsing
-                logger.debug(
-                    "📚 [PyIsolate][Deps] Passing through editable install: %s",
-                    req_str
-                )
                 filtered.append(req_str)
                 continue
             
             # Handle bare paths (editable without -e flag or local installs)
             if req_str_stripped.startswith('/') or req_str_stripped.startswith('./'):
-                logger.debug(
-                    "📚 [PyIsolate][Deps] Passing through local path install: %s",
-                    req_str
-                )
                 filtered.append(req_str)
                 continue
             
@@ -297,29 +283,15 @@ class Extension(Generic[T]):
                 
                 # Skip torch ecosystem packages when share_torch=true
                 if self.config["share_torch"] and pkg_name_lower in TORCH_ECOSYSTEM:
-                    logger.info(
-                        "📚 [PyIsolate][Deps] ⏭️  Skipping %s (torch ecosystem, inherited from host)",
-                        req.name
-                    )
                     continue
                 
                 # Check if package is installed and version satisfies requirement
                 if pkg_name_lower in installed:
                     installed_version = installed[pkg_name_lower]
                     if not req.specifier or installed_version in req.specifier:
-                        logger.info(
-                            "📚 [PyIsolate][Deps] ⏭️  Skipping %s==%s (already satisfied)",
-                            req.name,
-                            installed_version
-                        )
                         continue
                     else:
-                        logger.debug(
-                            "📚 [PyIsolate][Deps] Version mismatch: %s installed=%s required=%s",
-                            req.name,
-                            installed_version,
-                            req.specifier
-                        )
+                        pass
                 
                 filtered.append(req_str)
                 
@@ -331,13 +303,6 @@ class Extension(Generic[T]):
                     e
                 )
                 filtered.append(req_str)
-        
-        if len(filtered) < len(requirements):
-            logger.info(
-                "📚 [PyIsolate][Deps] Filtered %d/%d requirements (already satisfied)",
-                len(requirements) - len(filtered),
-                len(requirements)
-            )
         
         return filtered
     
@@ -352,7 +317,6 @@ class Extension(Generic[T]):
                 f"Failed to get 'spawn' context for pyisolate: {e}. "
                 "Pyisolate requires the 'spawn' start method to work correctly."
             ) from e
-        logger.debug("📚 [PyIsolate][Extension] Using spawn context for %s", self.name)
         
         # Use Manager-based queues for Windows cross-venv compatibility
         # Direct Queue passing fails on Windows with set_executable() due to
@@ -367,7 +331,6 @@ class Extension(Generic[T]):
         try:
             std_ctx = std_mp.get_context("spawn")
             self.manager = std_ctx.Manager()
-            logger.debug("📚 [PyIsolate][Extension] Manager started for %s", self.name)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to start multiprocessing Manager for {self.name}: {e}"
@@ -376,13 +339,6 @@ class Extension(Generic[T]):
         self.to_extension = self.manager.Queue()
         self.from_extension = self.manager.Queue()
         self.extension_proxy = None
-        logger.debug(
-            "📚 [PyIsolate][Extension] Preparing extension name=%s normalized=%s venv=%s module_path=%s",
-            self.name,
-            self.normalized_name,
-            self.venv_path,
-            self.module_path,
-        )
         try:
             self.proc = self.__launch()
         except Exception as exc:
@@ -401,7 +357,6 @@ class Extension(Generic[T]):
 
     def stop(self) -> None:
         """Stop the extension process and clean up resources."""
-        logger.debug("📚 [PyIsolate][Extension] Stopping extension %s", self.name)
         errors: list[str] = []
 
         if hasattr(self, "proc") and self.proc.is_alive():
@@ -434,7 +389,6 @@ class Extension(Generic[T]):
         if hasattr(self, "manager") and self.manager is not None:
             try:
                 self.manager.shutdown()
-                logger.debug("📚 [PyIsolate][Extension] Manager shutdown for %s", self.name)
             except Exception as exc:  # pragma: no cover
                 detail = f"Failed to shutdown manager for {self.name}: {exc}"
                 logger.error(detail)
@@ -457,21 +411,10 @@ class Extension(Generic[T]):
             executable = str(self.venv_path / "Scripts" / "python.exe")
         else:
             executable = str(self.venv_path / "bin" / "python")
-        logger.debug(
-            "📚 [PyIsolate][Extension] Launching %s via executable=%s share_torch=%s",
-            self.name,
-            executable,
-            self.config["share_torch"],
-        )
         
         # Capture host sys.path snapshot for child reconstruction
         snapshot_file = Path(tempfile.gettempdir()) / f"pyisolate_snapshot_{self.name}.json"
         snapshot = serialize_host_snapshot(output_path=str(snapshot_file))
-        logger.debug(
-            "📚 [PyIsolate][Extension] Host snapshot saved to %s for %s",
-            snapshot_file,
-            self.name,
-        )
         
         self.mp.set_executable(executable)
         with ExitStack() as stack:
@@ -550,7 +493,6 @@ class Extension(Generic[T]):
             # Instead, we create a clean venv and inject the parent venv via a .pth file.
             cmd = [sys.executable, "-m", "venv", str(self.venv_path)]
             
-            logger.debug("📚 [PyIsolate][Venv] Running: %s", " ".join(cmd))
             try:
                 subprocess.check_call(cmd)  # noqa: S603
                 
@@ -609,8 +551,6 @@ class Extension(Generic[T]):
             except subprocess.CalledProcessError as e:
                 logger.error("📚 [PyIsolate][Venv] ❌ Failed to create venv: %s", e)
                 raise
-        else:
-            logger.debug("📚 [PyIsolate][Venv] ♻️  Reusing existing venv at %s", self.venv_path)
 
     # TODO(Optimization): Only do this when we update a extension to reduce startup time?
     def _install_dependencies(self):
@@ -642,15 +582,7 @@ class Extension(Generic[T]):
         
         install_required = bool(safe_dependencies) or self.config["share_torch"]
         if not install_required:
-            logger.debug("📚 [PyIsolate][Deps] No dependencies to install for %s", self.name)
             return
-
-        logger.debug(
-            "📚 [PyIsolate][Deps] Installing dependencies for %s deps=%s share_torch=%s",
-            self.name,
-            self.config["dependencies"],
-            self.config["share_torch"],
-        )
 
         # Prepare command prefix and args
         if use_uv:
@@ -672,16 +604,14 @@ class Extension(Generic[T]):
                     os.link(test_file, test_link)
                     test_link.unlink()
                     common_args.extend(["--link-mode", "hardlink"])
-                    logger.debug("📚 [PyIsolate][Deps] Using hardlink mode for %s", self.name)
                 except OSError:
                     # Cross-filesystem, use copy mode
                     common_args.extend(["--link-mode", "copy"])
-                    logger.debug("📚 [PyIsolate][Deps] Hardlinks unavailable, using copy mode for %s", self.name)
                 finally:
                     test_file.unlink(missing_ok=True)
             except Exception as e:
                 # Fallback: don't specify link-mode, let uv decide
-                logger.debug("📚 [PyIsolate][Deps] Link mode test failed, using uv default for %s: %s", self.name, e)
+                pass
         else:
             cmd_prefix = [str(python_executable), "-m", "pip", "install"]
             common_args = []
@@ -738,20 +668,9 @@ class Extension(Generic[T]):
             except Exception:
                 cached = {}
             if cached.get("fingerprint") == fingerprint:
-                logger.debug(
-                    "📚 [PyIsolate][Deps] ♻️  Using cached environment (fingerprint match) for %s",
-                    self.name,
-                )
                 return
 
-        logger.info("📚 [PyIsolate][Deps] ⬇️  Installing dependencies for %s...", self.name)
-
         cmd = cmd_prefix + safe_dependencies + common_args
-        logger.debug(
-            "📚 [PyIsolate][Deps] Running command for %s: %s",
-            self.name,
-            " ".join(cmd),
-        )
 
         try:
             with subprocess.Popen(  # noqa: S603
@@ -768,7 +687,6 @@ class Extension(Generic[T]):
                     if "pyisolate==" in clean or "pyisolate @" in clean:
                         continue
                     output_lines.append(clean)
-                    logger.info("📚 [PyIsolate][Deps] %s", clean)
                 return_code = proc.wait()
             if return_code != 0:
                 detail = "\n".join(output_lines) or "(no output)"
@@ -778,11 +696,18 @@ class Extension(Generic[T]):
                 )
                 logger.error(msg)
                 raise RuntimeError(msg)
-            logger.debug(
-                "📚 [PyIsolate][Deps] Completed install for %s (returncode=%s)",
+            # Summary log for user visibility
+            skipped_count = len(self.config["dependencies"]) - len(safe_dependencies)
+            if self.config["share_torch"] and torch_spec:
+                 # torch_spec was added to safe_dependencies, so adjust count
+                 skipped_count += 1
+            
+            logger.info(
+                "📚 [PyIsolate][Deps] ✅ Installed dependencies for %s (Filtered %d cached)",
                 self.name,
-                return_code,
+                max(0, skipped_count)
             )
+
             lock_path.write_text(
                 json.dumps({"fingerprint": fingerprint, "descriptor": descriptor}, indent=2),
                 encoding="utf-8",
