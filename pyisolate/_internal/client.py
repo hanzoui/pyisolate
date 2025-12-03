@@ -39,13 +39,25 @@ from .shared import AsyncRPC
 # Configure child process logging to forward to parent's stdout
 # This must happen BEFORE any logging occurs in the child
 # Set to WARNING to suppress duplicate INFO logs (child shouldn't echo host logs)
+# DISABLED: Causes duplicate "INFO:root:" prefixes in host process logs
+# if os.environ.get("PYISOLATE_CHILD"):
+#     logging.basicConfig(
+#         level=logging.WARNING,
+#         format='📚 %(name)s - %(levelname)s - %(message)s',
+#         stream=sys.stdout,
+#         force=True
+#     )
+
+# CRITICAL: Remove any default handlers that Python might have added
+# This prevents the "INFO:root:" prefix from appearing in child logs
 if os.environ.get("PYISOLATE_CHILD"):
-    logging.basicConfig(
-        level=logging.WARNING,
-        format='📚 %(name)s - %(levelname)s - %(message)s',
-        stream=sys.stdout,
-        force=True
-    )
+    root = logging.getLogger()
+    if root.handlers:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+    
+    # Prevent auto-creation of default handler
+    logging.lastResort = None
 
 logger = logging.getLogger(__name__)
 PATH_LOGGING_ENABLED = bool(os.environ.get("PYISOLATE_PATH_DEBUG"))
