@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+# Paths needed for subprocess
+PYISOLATE_ROOT = str(Path(__file__).parent.parent)
+COMFYUI_ROOT = "/home/johnj/ComfyUI"
 
 SCRIPT = """
 import json, sys
@@ -17,6 +20,13 @@ print(json.dumps(sys.path[:6]))
 
 
 def _run_client_process(env):
+    # Ensure subprocess can find pyisolate and ComfyUI
+    pythonpath_parts = [PYISOLATE_ROOT, COMFYUI_ROOT]
+    existing = env.get("PYTHONPATH", "")
+    if existing:
+        pythonpath_parts.append(existing)
+    env["PYTHONPATH"] = ":".join(pythonpath_parts)
+    
     result = subprocess.run(  # noqa: S603
         [sys.executable, "-c", SCRIPT],
         capture_output=True,
@@ -38,7 +48,8 @@ def comfy_module_path(tmp_path):
 
 def test_snapshot_applied_and_comfy_root_prepend(tmp_path, comfy_module_path):
     comfy_root, module_path = comfy_module_path
-    host_paths = ["/host/lib1", "/host/lib2"]
+    # Must include real ComfyUI path for utils validation to pass
+    host_paths = [COMFYUI_ROOT, "/host/lib1", "/host/lib2"]
     snapshot = {
         "sys_path": host_paths,
         "sys_executable": sys.executable,
@@ -60,7 +71,8 @@ def test_snapshot_applied_and_comfy_root_prepend(tmp_path, comfy_module_path):
     path_prefix = _run_client_process(env)
 
     assert path_prefix[0] == str(comfy_root)
-    assert path_prefix[1:3] == host_paths
+    # ComfyUI is now first in host_paths, so lib1/lib2 shift
+    assert path_prefix[2:4] == ["/host/lib1", "/host/lib2"]
 
 
 def test_missing_snapshot_file_does_not_crash(tmp_path, comfy_module_path):
@@ -82,7 +94,8 @@ def test_missing_snapshot_file_does_not_crash(tmp_path, comfy_module_path):
 
 
 def test_no_comfy_root_when_module_path_absent(tmp_path):
-    host_paths = ["/alpha", "/beta"]
+    # Must include real ComfyUI path for utils validation to pass
+    host_paths = [COMFYUI_ROOT, "/alpha", "/beta"]
     snapshot = {
         "sys_path": host_paths,
         "sys_executable": sys.executable,
@@ -101,4 +114,5 @@ def test_no_comfy_root_when_module_path_absent(tmp_path):
     )
 
     paths = _run_client_process(env)
-    assert paths[:2] == host_paths
+    # ComfyUI is first, then alpha/beta
+    assert paths[1:3] == ["/alpha", "/beta"]

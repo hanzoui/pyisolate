@@ -113,6 +113,7 @@ disallow_untyped_defs = true
 minversion = "6.0"
 addopts = "-ra -q --cov=pyisolate --cov-report=html --cov-report=term-missing"
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["pyisolate"]

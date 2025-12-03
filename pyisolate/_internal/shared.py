@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import inspect
 import logging
+import os
 import queue
 import threading
 import uuid
@@ -28,8 +29,8 @@ else:
 
 logger = logging.getLogger(__name__)
 
-# TODO - Remove me
-debug_all_messages = False
+# Debug flag for verbose RPC message logging (set via PYISOLATE_DEBUG_RPC=1)
+debug_all_messages = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
 
 
 def debugprint(*args, **kwargs):

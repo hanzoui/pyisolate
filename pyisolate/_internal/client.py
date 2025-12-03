@@ -172,84 +172,78 @@ async def async_entrypoint(
 
                 # Install RPC log handler if this is LoggingRegistry
                 if api.__name__ == "LoggingRegistry":
-                    try:
-                        from comfy.isolation.proxies.logging_proxy import install_rpc_log_handler
-                        install_rpc_log_handler()
-                    except Exception as e:
-                        logger.warning(f"📚 [PyIsolate][Client] Failed to install RPC log handler: {e}")
+                    from comfy.isolation.proxies.logging_proxy import install_rpc_log_handler
+                    install_rpc_log_handler()
 
                 # Patch PromptServer.instance.register_route if it's the PromptServer proxy
                 if api.__name__ == "PromptServerProxy":
-                    try:
-                        import server
+                    import server
 
-                        proxy = api.instance
-                        original_register_route = proxy.register_route
+                    proxy = api.instance
+                    original_register_route = proxy.register_route
 
-                        def register_route_wrapper(method, path, handler):
-                            callback_id = rpc.register_callback(handler)
+                    def register_route_wrapper(method, path, handler):
+                        callback_id = rpc.register_callback(handler)
 
-                            loop = asyncio.get_event_loop()
-                            if loop.is_running():
-                                asyncio.create_task(
-                                    original_register_route(
-                                        method, path, handler=callback_id, is_callback=True
-                                    )
-                                )
-                            else:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(
                                 original_register_route(
                                     method, path, handler=callback_id, is_callback=True
                                 )
-                            return None
+                            )
+                        else:
+                            original_register_route(
+                                method, path, handler=callback_id, is_callback=True
+                            )
+                        return None
 
-                        proxy.register_route = register_route_wrapper
+                    proxy.register_route = register_route_wrapper
 
-                        class RouteTableDefProxy:
-                            def __init__(self, proxy_instance):
-                                self.proxy = proxy_instance
+                    class RouteTableDefProxy:
+                        def __init__(self, proxy_instance):
+                            self.proxy = proxy_instance
 
-                            def get(self, path, **kwargs):
-                                def decorator(handler):
-                                    self.proxy.register_route("GET", path, handler)
-                                    return handler
+                        def get(self, path, **kwargs):
+                            def decorator(handler):
+                                self.proxy.register_route("GET", path, handler)
+                                return handler
 
-                                return decorator
+                            return decorator
 
-                            def post(self, path, **kwargs):
-                                def decorator(handler):
-                                    self.proxy.register_route("POST", path, handler)
-                                    return handler
+                        def post(self, path, **kwargs):
+                            def decorator(handler):
+                                self.proxy.register_route("POST", path, handler)
+                                return handler
 
-                                return decorator
+                            return decorator
 
-                            def patch(self, path, **kwargs):
-                                def decorator(handler):
-                                    self.proxy.register_route("PATCH", path, handler)
-                                    return handler
+                        def patch(self, path, **kwargs):
+                            def decorator(handler):
+                                self.proxy.register_route("PATCH", path, handler)
+                                return handler
 
-                                return decorator
+                            return decorator
 
-                            def put(self, path, **kwargs):
-                                def decorator(handler):
-                                    self.proxy.register_route("PUT", path, handler)
-                                    return handler
+                        def put(self, path, **kwargs):
+                            def decorator(handler):
+                                self.proxy.register_route("PUT", path, handler)
+                                return handler
 
-                                return decorator
+                            return decorator
 
-                            def delete(self, path, **kwargs):
-                                def decorator(handler):
-                                    self.proxy.register_route("DELETE", path, handler)
-                                    return handler
+                        def delete(self, path, **kwargs):
+                            def decorator(handler):
+                                self.proxy.register_route("DELETE", path, handler)
+                                return handler
 
-                                return decorator
+                            return decorator
 
-                        proxy.routes = RouteTableDefProxy(proxy)
+                    proxy.routes = RouteTableDefProxy(proxy)
 
-                        if hasattr(server, "PromptServer"):
-                            if getattr(server.PromptServer, "instance", None) != proxy:
-                                server.PromptServer.instance = proxy
-                    except Exception as e:
-                        logger.warning(f"📚 [PyIsolate][Client] Failed to patch PromptServer: {e}")
+                    if hasattr(server, "PromptServer"):
+                        if getattr(server.PromptServer, "instance", None) != proxy:
+                            server.PromptServer.instance = proxy
 
             # Use just the directory name as the module name to avoid paths in __module__
             # This prevents pickle errors when classes are serialized across processes
