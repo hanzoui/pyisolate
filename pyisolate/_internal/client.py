@@ -38,9 +38,10 @@ from .shared import AsyncRPC
 
 # Configure child process logging to forward to parent's stdout
 # This must happen BEFORE any logging occurs in the child
+# Set to WARNING to suppress duplicate INFO logs (child shouldn't echo host logs)
 if os.environ.get("PYISOLATE_CHILD"):
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format='📚 %(name)s - %(levelname)s - %(message)s',
         stream=sys.stdout,
         force=True
