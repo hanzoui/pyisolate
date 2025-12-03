@@ -12,6 +12,29 @@ pyisolate enables you to run Python extensions with conflicting dependencies in 
 - The [`uv`](https://github.com/astral-sh/uv) CLI available on your `PATH`
 - `pip`/`venv` for bootstrapping the development environment
 
+## Environment Variables
+
+PyIsolate uses several environment variables for configuration and debugging:
+
+### Core Variables (Set by PyIsolate automatically)
+- **`PYISOLATE_CHILD`**: Set to `"1"` in isolated child processes. Used to detect if code is running in host or child.
+- **`PYISOLATE_HOST_SNAPSHOT`**: Path to JSON file containing the host's `sys.path` and environment variables. Used during child process initialization.
+- **`PYISOLATE_MODULE_PATH`**: Path to the extension module being loaded. Used to detect ComfyUI root directory.
+
+### Debug Variables (Set by user)
+- **`PYISOLATE_PATH_DEBUG`**: Set to `"1"` to enable detailed sys.path logging during child process initialization. Useful for debugging import issues.
+
+Example usage:
+```bash
+# Enable detailed path logging
+export PYISOLATE_PATH_DEBUG=1
+python main.py
+
+# Disable path logging (default)
+unset PYISOLATE_PATH_DEBUG
+python main.py
+```
+
 ## Quick Start
 
 ### Option A – run everything for me

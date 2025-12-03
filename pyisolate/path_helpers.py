@@ -1,4 +1,22 @@
-"""Utilities for sharing host path context with PyIsolate children."""
+"""Utilities for sharing host path context with PyIsolate children.
+
+This module provides functions to capture and reconstruct sys.path for isolated
+child processes. The path unification logic is consumed by:
+
+- **Host side**: `serialize_host_snapshot()` captures the host's sys.path and
+  environment variables, saving them to a JSON file.
+
+- **Child side**: `build_child_sys_path()` is called from
+  `pyisolate/_internal/client.py` at module import time to reconstruct sys.path
+  with ComfyUI root first, then isolated venv, then host paths.
+
+The key requirement: ComfyUI's root directory (e.g., /home/johnj/ComfyUI) must
+be first in sys.path to ensure `import utils.json_util` resolves correctly.
+ComfyUI subdirectories (comfy/, app/, utils/) are excluded to prevent shadowing.
+
+See `pyisolate/_internal/client.py` for the critical path unification section
+that executes at module import time in child processes.
+"""
 
 from __future__ import annotations
 
@@ -82,7 +100,8 @@ def build_child_sys_path(
             os.path.join(comfy_norm, "app"),
             os.path.join(comfy_norm, "comfy_execution"),
             # comfy_extras is a legitimate package, nodes need to import it
-            os.path.join(comfy_norm, "utils"),  # Added utils to prevent shadowing
+            # Added utils to prevent shadowing
+            os.path.join(comfy_norm, "utils"),
         }
         filtered_host = []
         for p in ordered_host:
