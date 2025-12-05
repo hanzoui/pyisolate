@@ -329,24 +329,24 @@ class Extension(Generic[T]):
         # On Windows, Manager.start() spawns a new process that re-runs main.py.
         # Without this env var, ComfyUI's IS_PRIMARY_PROCESS check fails and it
         # tries to start the full server, causing import errors.
-        import multiprocessing as std_mp
         os.environ["PYISOLATE_CHILD"] = "1"
-        try:
-            std_ctx = std_mp.get_context("spawn")
-            self.manager = std_ctx.Manager()
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to start multiprocessing Manager for {self.name}: {e}"
-            ) from e
         
-        # Use standard multiprocessing Queues instead of Manager Queues on Linux
-        # Manager Queues are slower and more brittle (AutoProxy issues)
-        # Only use Manager on Windows where handle inheritance is tricky
+        # Use standard multiprocessing Queues on Linux/macOS - faster and more reliable
+        # Only use Manager on Windows where handle inheritance is tricky with set_executable()
         if os.name == "nt":
+            import multiprocessing as std_mp
+            try:
+                std_ctx = std_mp.get_context("spawn")
+                self.manager = std_ctx.Manager()
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to start multiprocessing Manager for {self.name}: {e}"
+                ) from e
             self.to_extension = self.manager.Queue()
             self.from_extension = self.manager.Queue()
         else:
-            # On Linux/macOS, standard queues work fine with spawn and are faster/safer
+            # Linux/macOS: direct queues work fine with spawn context
+            self.manager = None
             self.to_extension = self.ctx.Queue()
             self.from_extension = self.ctx.Queue()
             
