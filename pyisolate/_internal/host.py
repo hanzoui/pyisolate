@@ -230,9 +230,6 @@ class Extension(Generic[T]):
         if self._process_initialized:
             return
         
-        # Loudly announce spawn to prevent "hang" perception
-        logger.info(f"🚀 [PyIsolate] Spawning isolated process for {self.name}... (First run only)")
-        
         self._initialize_process()
         self._process_initialized = True
 
@@ -367,6 +364,15 @@ class Extension(Generic[T]):
 
         return self.extension_proxy
 
+    def __getattr__(self, name: str):
+        """Delegate attribute access to the extension proxy, ensuring process is alive."""
+        # Avoid infinite recursion for internal attributes
+        if name in ("_process_initialized", "ensure_process_started", "get_proxy", "name"):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        self.ensure_process_started()
+        return getattr(self.get_proxy(), name)
+
     def stop(self) -> None:
         """Stop the extension process and clean up resources."""
         errors: list[str] = []
@@ -398,16 +404,23 @@ class Extension(Generic[T]):
                 errors.append(detail)
 
         # Shutdown the Manager (required for Windows Manager-based queues)
-        if hasattr(self, "manager") and self.manager is not None:
+        if self.manager:
             try:
                 self.manager.shutdown()
-            except Exception as exc:  # pragma: no cover
-                detail = f"Failed to shutdown manager for {self.name}: {exc}"
+            except Exception as exc:
+                detail = f"Failed to shutdown Manager for {self.name}: {exc}"
                 logger.error(detail)
                 errors.append(detail)
 
+        # Reset state so ensure_process_started() will respawn if needed
+        self._process_initialized = False
+        self.extension_proxy = None
+        if hasattr(self, "rpc"):
+            # RPC object holds queues, need to recreate it on respawn
+            del self.rpc
+
         if errors:
-            raise RuntimeError("; ".join(errors))
+            raise RuntimeError(f"Errors stopping extension {self.name}: {'; '.join(errors)}")
         
         self._process_initialized = False
 

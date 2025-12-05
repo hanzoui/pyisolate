@@ -142,6 +142,7 @@ def deserialize_from_isolation(data: Any) -> Any:
     This is called on the HOST side after receiving results from child.
     ModelPatcherRef markers are resolved back to real ModelPatcher objects.
     CLIPRef markers are resolved back to real CLIP objects.
+    NodeOutput objects are unwrapped to their .args tuple.
     
     Args:
         data: Serialized structure from child
@@ -149,6 +150,12 @@ def deserialize_from_isolation(data: Any) -> Any:
     Returns:
         Deserialized structure with real ModelPatcher/CLIP instances
     """
+    # Handle V3 API NodeOutput - unwrap to tuple
+    type_name = type(data).__name__
+    if type_name == 'NodeOutput':
+        # NodeOutput.args is the tuple of actual return values
+        return deserialize_from_isolation(data.args)
+    
     if isinstance(data, dict):
         ref_type = data.get("__type__")
         
