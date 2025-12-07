@@ -626,8 +626,9 @@ class Extension(Generic[T]):
         if self.config["share_torch"] and safe_dependencies:
             safe_dependencies = self._filter_already_satisfied(safe_dependencies, python_executable)
         
-        install_required = bool(safe_dependencies) or self.config["share_torch"]
-        if not install_required:
+        # When share_torch=true, packages are inherited via .pth file
+        # Skip install if nothing left after filtering
+        if not safe_dependencies:
             return
 
         # Prepare command prefix and args
