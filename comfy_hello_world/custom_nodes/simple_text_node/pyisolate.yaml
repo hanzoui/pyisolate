@@ -1,5 +1,0 @@
-isolated: true
-dependencies:
-  - requests==2.31.0
-  - numpy>=2.0.0
-share_torch: false
