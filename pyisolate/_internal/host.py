@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from logging.handlers import QueueListener
 import os
 import re
 import shutil
@@ -224,6 +225,8 @@ class Extension(Generic[T]):
         
         # Initialize the isolated process lazily
         self._process_initialized = False
+        self.log_queue = None
+        self.log_listener = None
     
     def ensure_process_started(self) -> None:
         """Start the isolated process if not already running."""
@@ -341,13 +344,21 @@ class Extension(Generic[T]):
                 ) from e
             self.to_extension = self.manager.Queue()
             self.from_extension = self.manager.Queue()
+            self.log_queue = self.manager.Queue()
         else:
             # Linux/macOS: direct queues work fine with spawn context
             self.manager = None
             self.to_extension = self.ctx.Queue()
             self.from_extension = self.ctx.Queue()
+            self.log_queue = self.ctx.Queue()
             
         self.extension_proxy = None
+        try:
+            self.log_listener = QueueListener(self.log_queue, logging.StreamHandler(sys.stdout))
+            self.log_listener.start()
+        except Exception as exc:
+            logger.error("📚 [PyIsolate][Extension] Failed to start log listener for %s: %s", self.name, exc)
+            raise
         try:
             self.proc = self.__launch()
         except Exception as exc:
@@ -392,7 +403,15 @@ class Extension(Generic[T]):
                 logger.error(detail)
                 errors.append(detail)
 
-        for attr_name in ("to_extension", "from_extension"):
+        if self.log_listener:
+            try:
+                self.log_listener.stop()
+            except Exception as exc:
+                detail = f"Failed to stop log listener for {self.name}: {exc}"
+                logger.error(detail)
+                errors.append(detail)
+
+        for attr_name in ("to_extension", "from_extension", "log_queue"):
             queue = getattr(self, attr_name, None)
             if queue is None:
                 continue
@@ -469,6 +488,7 @@ class Extension(Generic[T]):
                     self.config,
                     self.to_extension,
                     self.from_extension,
+                    self.log_queue,
                 ),
             )
             proc.start()

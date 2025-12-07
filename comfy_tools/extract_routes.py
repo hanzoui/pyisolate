@@ -139,7 +139,7 @@ Examples:
         return 0
     
     # Human-readable output
-    print(f"\n[I] Route Extraction Report")
+    print(f"\n][ Route Extraction Report")
     print(f"{'=' * 50}")
     print(f"Node:   {node_path.name}")
     print(f"Path:   {node_path}")

@@ -30,6 +30,7 @@ import sys
 import sysconfig
 from contextlib import nullcontext
 from pathlib import Path
+from logging.handlers import QueueHandler
 
 from ..config import ExtensionConfig
 from ..path_helpers import build_child_sys_path
@@ -55,8 +56,6 @@ if os.environ.get("PYISOLATE_CHILD"):
     if root.handlers:
         for handler in root.handlers[:]:
             root.removeHandler(handler)
-    
-    # Prevent auto-creation of default handler
     logging.lastResort = None
 
 logger = logging.getLogger(__name__)
@@ -164,6 +163,7 @@ async def async_entrypoint(
     config: ExtensionConfig,
     to_extension,
     from_extension,
+    log_queue,
 ) -> None:
     """Asynchronous entrypoint for isolated extension processes.
 
@@ -182,6 +182,12 @@ async def async_entrypoint(
         ValueError: If module_path is not a directory.
         Exception: Any exception from extension initialization or execution.
     """
+    if os.environ.get("PYISOLATE_CHILD") and log_queue is not None:
+        root = logging.getLogger()
+        queue_handler = QueueHandler(log_queue)
+        root.addHandler(queue_handler)
+        root.setLevel(logging.INFO)
+
     rpc = AsyncRPC(recv_queue=to_extension, send_queue=from_extension)
 
     # Store RPC globally for deserialization use
@@ -339,6 +345,7 @@ def entrypoint(
     config: ExtensionConfig,
     to_extension,
     from_extension,
+    log_queue,
 ) -> None:
     """Synchronous wrapper for async_entrypoint.
 
@@ -358,4 +365,7 @@ def entrypoint(
             extension_type,
             config,
             to_extension,
-            from_extension))
+            from_extension,
+            log_queue,
+        )
+    )
