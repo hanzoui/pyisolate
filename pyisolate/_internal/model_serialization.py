@@ -73,11 +73,19 @@ def serialize_for_isolation(data: Any) -> Any:
     return data
 
 
-def deserialize_from_isolation(data: Any) -> Any:
+async def deserialize_from_isolation(data: Any, extension: Any = None) -> Any:
     """Deserialize data from isolated process (host side)."""
+    from comfy.isolation.extension_wrapper import RemoteObjectHandle
+
     type_name = type(data).__name__
+
+    if isinstance(data, RemoteObjectHandle):
+        if extension is None:
+            raise RuntimeError("Cannot deserialize RemoteObjectHandle without extension reference")
+        return await extension.get_remote_object(data.object_id)
+
     if type_name == 'NodeOutput':
-        return deserialize_from_isolation(data.args)
+        return await deserialize_from_isolation(data.args, extension)
 
     if isinstance(data, dict):
         ref_type = data.get("__type__")
@@ -90,10 +98,13 @@ def deserialize_from_isolation(data: Any) -> Any:
             from comfy.isolation.clip_proxy import CLIPRegistry
             return CLIPRegistry()._get_instance(data["clip_id"])
 
-        return {k: deserialize_from_isolation(v) for k, v in data.items()}
+        deserialized: dict[str, Any] = {}
+        for k, v in data.items():
+            deserialized[k] = await deserialize_from_isolation(v, extension)
+        return deserialized
 
     if isinstance(data, (list, tuple)):
-        result = [deserialize_from_isolation(item) for item in data]
+        result = [await deserialize_from_isolation(item, extension) for item in data]
         return type(data)(result)
 
     return data
