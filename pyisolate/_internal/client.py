@@ -17,7 +17,7 @@ from .shared import AsyncRPC, set_child_rpc_instance
 
 logger = logging.getLogger(__name__)
 
-if os.environ.get("PYISOLATE_CHILD"):
+if os.environ.get("PYISOLATE_CHILD") and os.environ.get("PYISOLATE_HOST_SNAPSHOT"):
     root = logging.getLogger()
     for handler in root.handlers[:]:
         root.removeHandler(handler)
