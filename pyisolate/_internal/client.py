@@ -23,6 +23,21 @@ if os.environ.get("PYISOLATE_CHILD"):
         root.removeHandler(handler)
     logging.lastResort = None
 
+    # Suppress ALL ComfyUI dependencies by loading requirements.txt
+    import re
+    snapshot = json.loads(Path(os.environ["PYISOLATE_HOST_SNAPSHOT"]).read_text())
+    comfy_root = Path(snapshot.get("comfy_root", ""))
+    requirements_path = comfy_root / "requirements.txt"
+
+    for line in requirements_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Extract package name from requirements line (e.g., "torch>=1.0.0" -> "torch")
+        pkg_name = re.split(r'[<>=!~\[]', line)[0].strip()
+        if pkg_name:
+            logging.getLogger(pkg_name).setLevel(logging.ERROR)
+
     class _ChildLogFilter(logging.Filter):
         _SUPPRESS = ("Total VRAM", "pytorch version:", "Set vram state to:",
                      "Device: cuda", "Enabled pinned memory", "Checkpoint files",

@@ -26,6 +26,31 @@ _DANGEROUS_PATTERNS = ("&&", "||", ";", "|", "`", "$", "\n", "\r", "\0")
 _UNSAFE_CHARS = frozenset(' \t\n\r;|&$`()<>"\'\\!{}[]*?~#%=,:')
 
 
+class _DeduplicationFilter(logging.Filter):
+    def __init__(self, timeout_seconds=10):
+        super().__init__()
+        self.timeout = timeout_seconds
+        self.last_seen = {}
+
+    def filter(self, record):
+        import time
+        msg_content = record.getMessage()
+        msg_hash = hashlib.md5(msg_content.encode('utf-8')).hexdigest()
+        now = time.time()
+        
+        if msg_hash in self.last_seen:
+            if now - self.last_seen[msg_hash] < self.timeout:
+                return False  # Suppress duplicate
+        
+        self.last_seen[msg_hash] = now
+        
+        if len(self.last_seen) > 1000:
+            cutoff = now - self.timeout
+            self.last_seen = {k: v for k, v in self.last_seen.items() if v > cutoff}
+        
+        return True
+
+
 def _detect_pyisolate_version() -> str:
     try:
         return importlib_metadata.version("pyisolate")
@@ -198,7 +223,12 @@ class Extension(Generic[T]):
             self.log_queue = self.ctx.Queue()
 
         self.extension_proxy = None
-        self.log_listener = QueueListener(self.log_queue, logging.StreamHandler(sys.stdout))
+        
+        # Create handler with deduplication filter (industry standard)
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.addFilter(_DeduplicationFilter(timeout_seconds=5))
+        
+        self.log_listener = QueueListener(self.log_queue, stream_handler)
         self.log_listener.start()
 
         self.proc = self.__launch()
