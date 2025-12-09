@@ -48,6 +48,22 @@ def serialize_for_isolation(data: Any) -> Any:
     """Serialize data for transmission to isolated process (host side)."""
     type_name = type(data).__name__
 
+    # If this object originated as a RemoteObjectHandle, prefer to send the
+    # handle back to the isolated process rather than attempting to pickle the
+    # concrete instance. This preserves identity (and avoids pickling large or
+    # unpicklable objects) while still allowing host-side consumers to interact
+    # with the resolved object.
+    try:
+        from comfy.isolation.extension_wrapper import RemoteObjectHandle
+
+        handle = getattr(data, "_pyisolate_remote_handle", None)
+        if isinstance(handle, RemoteObjectHandle):
+            return handle
+    except Exception:
+        # If the helper cannot be imported or attribute access fails, continue
+        # with normal serialization.
+        pass
+
     if type_name == 'ModelPatcher':
         from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
         model_id = ModelPatcherRegistry().register(data)
@@ -73,19 +89,36 @@ def serialize_for_isolation(data: Any) -> Any:
     return data
 
 
-async def deserialize_from_isolation(data: Any, extension: Any = None) -> Any:
-    """Deserialize data from isolated process (host side)."""
+async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: bool = False) -> Any:
+    """Deserialize data from isolated process (host side).
+
+    Top-level `RemoteObjectHandle` values are resolved to concrete objects when an
+    extension proxy is available. Nested handles (e.g., inside dict/list payloads)
+    are preserved so they can be returned to the isolated process without forcing
+    pickling/unpickling of large or unpicklable objects (torch modules, etc.).
+    """
     from comfy.isolation.extension_wrapper import RemoteObjectHandle
 
     type_name = type(data).__name__
 
     if isinstance(data, RemoteObjectHandle):
-        if extension is None:
-            raise RuntimeError("Cannot deserialize RemoteObjectHandle without extension reference")
-        return await extension.get_remote_object(data.object_id)
+        if _nested or extension is None:
+            return data
+        try:
+            resolved = await extension.get_remote_object(data.object_id)
+            try:
+                setattr(resolved, "_pyisolate_remote_handle", data)
+            except Exception:
+                pass
+            return resolved
+        except Exception:
+            return data
 
     if type_name == 'NodeOutput':
-        return await deserialize_from_isolation(data.args, extension)
+        # Treat NodeOutput as a transparent container. Preserve current nesting
+        # semantics so top-level outputs can be concretized while nested handles
+        # stay opaque.
+        return await deserialize_from_isolation(data.args, extension, _nested=_nested)
 
     if isinstance(data, dict):
         ref_type = data.get("__type__")
@@ -100,11 +133,17 @@ async def deserialize_from_isolation(data: Any, extension: Any = None) -> Any:
 
         deserialized: dict[str, Any] = {}
         for k, v in data.items():
-            deserialized[k] = await deserialize_from_isolation(v, extension)
+            # Dict entries are considered nested to preserve handles inside
+            # structured payloads (e.g., da_model['model']).
+            deserialized[k] = await deserialize_from_isolation(v, extension, _nested=True)
         return deserialized
 
     if isinstance(data, (list, tuple)):
-        result = [await deserialize_from_isolation(item, extension) for item in data]
+        # For list/tuple, propagate the current nesting flag. Top-level tuples
+        # (e.g., node outputs) stay `_nested=False`, allowing handles to resolve
+        # to concrete objects when appropriate. Deeper levels inherit `_nested`
+        # to avoid over-resolving nested handles.
+        result = [await deserialize_from_isolation(item, extension, _nested=_nested) for item in data]
         return type(data)(result)
 
     return data
