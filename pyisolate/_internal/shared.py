@@ -8,6 +8,7 @@ import os
 import queue
 import threading
 import uuid
+from .model_serialization import serialize_for_isolation
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -131,11 +132,29 @@ def _tensor_to_cpu(obj: Any) -> Any:
     # Custom serialization hook for ModelPatcher
     if type_name == 'ModelPatcher':
         try:
+            import os
+            if os.environ.get("PYISOLATE_CHILD") == "1":
+                if hasattr(obj, "_instance_id"):
+                    return {"__type__": "ModelPatcherRef", "model_id": getattr(obj, "_instance_id")}
+                return {"__type__": "ModelPatcherOpaque", "repr": str(obj)[:256]}
             from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
             model_id = ModelPatcherRegistry().register(obj)
             return {"__type__": "ModelPatcherRef", "model_id": model_id}
-        except ImportError:
-            pass
+        except Exception:
+            return {"__type__": "ModelPatcherOpaque", "repr": str(obj)[:256]}
+
+    if type_name.startswith('ModelSampling'):
+        try:
+            import os
+            if os.environ.get("PYISOLATE_CHILD") == "1":
+                if hasattr(obj, "_instance_id"):
+                    return {"__type__": "ModelSamplingRef", "ms_id": getattr(obj, "_instance_id")}
+                return {"__type__": "ModelSamplingOpaque", "repr": str(obj)[:256]}
+            from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry
+            ms_id = ModelSamplingRegistry().register(obj)
+            return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
+        except Exception:
+            return {"__type__": "ModelSamplingOpaque", "repr": str(obj)[:256]}
 
     # Handle ModelPatcherProxy - convert to ref (child returning proxy to host)
     if type_name == 'ModelPatcherProxy':
@@ -207,6 +226,21 @@ def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
             else:
                 from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
                 return ModelPatcherRegistry()._get_instance(obj["model_id"])
+        except ImportError:
+            pass
+
+    if isinstance(obj, dict) and obj.get("__type__") in ("ModelPatcherOpaque", "ModelSamplingOpaque"):
+        return obj
+
+    if isinstance(obj, dict) and obj.get("__type__") == "ModelSamplingRef":
+        try:
+            is_child = os.environ.get("PYISOLATE_CHILD") == "1"
+            if is_child:
+                from comfy.isolation.model_sampling_proxy import ModelSamplingProxy
+                return ModelSamplingProxy(obj["ms_id"])
+            else:
+                from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry
+                return ModelSamplingRegistry()._get_instance(obj["ms_id"])
         except ImportError:
             pass
 
@@ -508,14 +542,16 @@ class AsyncRPC:
                 id_gen += 1
                 with self.lock:
                     self.pending[call_id] = item
+                serialized_args = serialize_for_isolation(item["args"])
+                serialized_kwargs = serialize_for_isolation(item["kwargs"])
                 request = RPCRequest(
                     kind="call",
                     object_id=item["object_id"],
                     call_id=call_id,
                     parent_call_id=item["parent_call_id"],
                     method=item["method"],
-                    args=_tensor_to_cpu(item["args"]),
-                    kwargs=_tensor_to_cpu(item["kwargs"]),
+                    args=_tensor_to_cpu(serialized_args),
+                    kwargs=_tensor_to_cpu(serialized_kwargs),
                 )
                 try:
                     self.send_queue.put(request)
@@ -532,13 +568,15 @@ class AsyncRPC:
                 id_gen += 1
                 with self.lock:
                     self.pending[call_id] = item
+                serialized_args = serialize_for_isolation(item["args"])
+                serialized_kwargs = serialize_for_isolation(item["kwargs"])
                 request = RPCCallback(
                     kind="callback",
                     callback_id=item["object_id"],
                     call_id=call_id,
                     parent_call_id=item["parent_call_id"],
-                    args=_tensor_to_cpu(item["args"]),
-                    kwargs=_tensor_to_cpu(item["kwargs"]),
+                    args=_tensor_to_cpu(serialized_args),
+                    kwargs=_tensor_to_cpu(serialized_kwargs),
                 )
                 try:
                     self.send_queue.put(request)

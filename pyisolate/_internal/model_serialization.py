@@ -7,6 +7,7 @@ lightweight references while preserving tensor sharing semantics.
 """
 
 import logging
+import os
 from typing import Any
 
 import torch
@@ -86,6 +87,11 @@ def serialize_for_isolation(data: Any) -> Any:
         pass
 
     if type_name == 'ModelPatcher':
+        logger.warning("[serialize_for_isolation] ModelPatcher child=%s has_id=%s", os.environ.get("PYISOLATE_CHILD") == "1", hasattr(data, "_instance_id"))
+        if os.environ.get("PYISOLATE_CHILD") == "1":
+            if hasattr(data, "_instance_id"):
+                return {"__type__": "ModelPatcherRef", "model_id": getattr(data, "_instance_id")}
+            return {"__type__": "ModelPatcherOpaque", "repr": str(data)[:256]}
         from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
         model_id = ModelPatcherRegistry().register(data)
         return {"__type__": "ModelPatcherRef", "model_id": model_id}
@@ -117,6 +123,31 @@ def serialize_for_isolation(data: Any) -> Any:
     if type_name == 'VAEProxy':
         # Already a proxy, return as-is (return the ref dict)
         return {"__type__": "VAERef", "vae_id": data._instance_id}
+
+    if type_name.startswith('ModelSampling'):
+        logger.warning("[serialize_for_isolation] ModelSampling child=%s has_id=%s", os.environ.get("PYISOLATE_CHILD") == "1", hasattr(data, "_instance_id"))
+        if os.environ.get("PYISOLATE_CHILD") == "1":
+            if hasattr(data, "_instance_id"):
+                return {"__type__": "ModelSamplingRef", "ms_id": getattr(data, "_instance_id")}
+            return {"__type__": "ModelSamplingOpaque", "repr": str(data)[:256]}
+        try:
+            import copyreg
+            from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry, ModelSamplingProxy
+
+            def _reduce_model_sampling(ms):
+                registry = ModelSamplingRegistry()
+                ms_id_local = registry.register(ms)
+                return (ModelSamplingProxy, (ms_id_local,))
+
+            copyreg.pickle(type(data), _reduce_model_sampling)
+
+            ms_id = ModelSamplingRegistry().register(data)
+            return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
+        except ImportError:
+            return data
+
+    if type_name == 'ModelSamplingProxy':
+        return {"__type__": "ModelSamplingRef", "ms_id": data._instance_id}
 
     if isinstance(data, dict):
         if data.get("__type__") == "ModelPatcherRef":
@@ -175,6 +206,10 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
             from comfy.isolation.vae_proxy import VAERegistry
             return VAERegistry()._get_instance(data["vae_id"])
 
+        if ref_type == "ModelSamplingRef":
+            from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry
+            return ModelSamplingRegistry()._get_instance(data["ms_id"])
+
         deserialized: dict[str, Any] = {}
         for k, v in data.items():
             # Dict entries are considered nested to preserve handles inside
@@ -214,6 +249,10 @@ def deserialize_proxy_result(data: Any) -> Any:
         if ref_type == "VAERef":
             from comfy.isolation.vae_proxy import VAEProxy
             return VAEProxy(data["vae_id"])
+
+        if ref_type == "ModelSamplingRef":
+            from comfy.isolation.model_sampling_proxy import ModelSamplingProxy
+            return ModelSamplingProxy(data["ms_id"])
 
         return {k: deserialize_proxy_result(v) for k, v in data.items()}
 
