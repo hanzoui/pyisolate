@@ -1,3 +1,10 @@
+"""Utilities for sharing host path context with PyIsolate children.
+
+``serialize_host_snapshot`` captures host ``sys.path`` and select environment variables.
+``build_child_sys_path`` reconstructs ``sys.path`` in children with an optional preferred
+root first and removes code subdirectories that would shadow imports.
+"""
+
 from __future__ import annotations
 
 import json
@@ -18,7 +25,11 @@ def serialize_host_snapshot(
     output_path: str | os.PathLike[str] | None = None,
     extra_env_keys: Iterable[str] | None = None,
 ) -> dict:
-    """Capture host interpreter context for child processes."""
+    """Capture the host interpreter context for use by child processes.
+
+    Persisting the snapshot is optional; when provided, ``output_path`` will contain
+    a JSON payload with ``sys.path``, the Python executable, and selected env vars.
+    """
     env_keys = list(_DEFAULT_ENV_KEYS)
     if extra_env_keys:
         env_keys.extend(extra_env_keys)
@@ -44,9 +55,14 @@ def serialize_host_snapshot(
 def build_child_sys_path(
     host_paths: Sequence[str],
     extra_paths: Sequence[str],
-    comfy_root: str | None = None,
+    preferred_root: str | None = None,
 ) -> List[str]:
-    """Construct sys.path for child interpreter with ComfyUI root first."""
+    """Construct ``sys.path`` for an isolated child interpreter.
+
+    Host paths retain order, an optional preferred root is prepended, and child
+    venv site-packages are appended while avoiding duplicates and code subdirs
+    that would shadow imports (e.g., package subfolders like ``utils``).
+    """
 
     def _norm(path: str) -> str:
         return os.path.normcase(os.path.abspath(path))
@@ -55,23 +71,23 @@ def build_child_sys_path(
     seen: set[str] = set()
 
     ordered_host = list(host_paths)
-    if comfy_root:
-        comfy_norm = _norm(comfy_root)
+    if preferred_root:
+        root_norm = _norm(preferred_root)
         code_subdirs = {
-            os.path.join(comfy_norm, "comfy"),
-            os.path.join(comfy_norm, "app"),
-            os.path.join(comfy_norm, "comfy_execution"),
-            os.path.join(comfy_norm, "utils"),
+            os.path.join(root_norm, "comfy"),
+            os.path.join(root_norm, "app"),
+            os.path.join(root_norm, "comfy_execution"),
+            os.path.join(root_norm, "utils"),
         }
         filtered_host = []
         for p in ordered_host:
             p_norm = _norm(p)
-            if p_norm == comfy_norm:
+            if p_norm == root_norm:
                 continue
             if p_norm in code_subdirs:
                 continue
             filtered_host.append(p)
-        ordered_host = [comfy_root] + filtered_host
+        ordered_host = [preferred_root] + filtered_host
 
     def add_path(path: str) -> None:
         if not path:

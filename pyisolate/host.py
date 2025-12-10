@@ -1,3 +1,9 @@
+"""Host-side ExtensionManager for PyIsolate.
+
+Manages isolated virtual environments, dependency installation, and RPC lifecycle
+for extensions loaded into separate processes.
+"""
+
 import logging
 from typing import Generic, TypeVar, cast
 
@@ -11,15 +17,25 @@ T = TypeVar("T", bound=ExtensionBase)
 
 
 class ExtensionManager(Generic[T]):
-    """Manages extension loading and lifecycle."""
+    """Manager for loading and supervising isolated extensions."""
 
     def __init__(self, extension_type: type[T], config: ExtensionManagerConfig) -> None:
+        """Initialize the ExtensionManager.
+
+        Args:
+            extension_type: Base class that all managed extensions inherit from.
+            config: Manager configuration (e.g., root path for virtualenvs).
+        """
         self.config = config
         self.extensions: dict[str, Extension] = {}
         self.extension_type = extension_type
 
     def load_extension(self, config: ExtensionConfig) -> T:
-        """Load an extension with the given configuration."""
+        """Load an extension with the given configuration.
+
+        Creates the venv (if isolated), installs dependencies, starts the child
+        process, and returns a proxy that forwards calls to the isolated extension.
+        """
         name = config["name"]
         if name in self.extensions:
             raise ValueError(f"Extension '{name}' is already loaded")

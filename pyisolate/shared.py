@@ -1,3 +1,5 @@
+"""Public host/extension shared interfaces for PyIsolate."""
+
 from types import ModuleType
 from typing import TypeVar, final
 
@@ -7,21 +9,22 @@ proxied_type = TypeVar("proxied_type", bound=object)
 
 
 class ExtensionLocal:
-    """Base class for extension functionality running in the extension process."""
+    """Base class for code that runs inside the extension process."""
 
     async def before_module_loaded(self) -> None:
-        """Hook called before the extension module is loaded."""
+        """Hook called before the extension module is imported."""
 
     async def on_module_loaded(self, module: ModuleType) -> None:
-        """Hook called after the extension module is loaded."""
+        """Hook called after the extension module is successfully loaded."""
 
     @final
     def _initialize_rpc(self, rpc: AsyncRPC) -> None:
+        """Initialize RPC communication (called internally by the framework)."""
         self._rpc = rpc
 
     @final
     def register_callee(self, object_instance: object, object_id: str) -> None:
-        """Register an object for remote calls from the host process."""
+        """Expose an object for remote calls from the host process."""
         self._rpc.register_callee(object_instance, object_id)
 
     @final
@@ -31,12 +34,12 @@ class ExtensionLocal:
 
     @final
     def use_remote(self, proxied_singleton: type[ProxiedSingleton]) -> None:
-        """Configure a ProxiedSingleton to use remote instances."""
+        """Configure a ProxiedSingleton class to resolve to remote instances."""
         proxied_singleton.use_remote(self._rpc)
 
 
 class ExtensionBase(ExtensionLocal):
-    """Base class for all pyisolate extensions."""
+    """Base class for all PyIsolate extensions, providing lifecycle hooks and RPC wiring."""
 
     def __init__(self) -> None:
         super().__init__()

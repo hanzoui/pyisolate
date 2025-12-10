@@ -62,6 +62,15 @@ pyisolate_version = _detect_pyisolate_version()
 
 
 def normalize_extension_name(name: str) -> str:
+    """
+    Normalize an extension name for filesystem and shell safety.
+
+    Replaces unsafe characters, strips traversal attempts, and ensures a non-empty
+    result while preserving Unicode characters.
+
+    Raises:
+        ValueError: If the normalized name would be empty.
+    """
     if not name:
         raise ValueError("Extension name cannot be empty")
 
@@ -82,6 +91,7 @@ def normalize_extension_name(name: str) -> str:
 
 
 def validate_dependency(dep: str) -> None:
+    """Validate a single dependency specification."""
     if not dep:
         return
     if dep == "-e":
@@ -99,6 +109,7 @@ def validate_dependency(dep: str) -> None:
 
 
 def validate_path_within_root(path: Path, root: Path) -> None:
+    """Ensure ``path`` is contained within ``root`` to avoid path escape."""
     try:
         path.resolve().relative_to(root.resolve())
     except ValueError as err:
@@ -107,6 +118,7 @@ def validate_path_within_root(path: Path, root: Path) -> None:
 
 @contextmanager
 def environment(**env_vars):
+    """Temporarily set environment variables inside a context."""
     original = {}
     for key, value in env_vars.items():
         original[key] = os.environ.get(key)
@@ -159,12 +171,19 @@ class Extension(Generic[T]):
         self.manager = None
 
     def ensure_process_started(self) -> None:
+        """Start the isolated process if it has not been initialized."""
         if self._process_initialized:
             return
         self._initialize_process()
         self._process_initialized = True
 
     def _exclude_satisfied_requirements(self, requirements: list[str], python_exe: Path) -> list[str]:
+        """Filter requirements to skip packages already satisfied in the venv.
+
+        When ``share_torch`` is enabled, the child venv inherits host site-packages,
+        so torch ecosystem packages may already be present. This helper keeps the
+        install list minimal.
+        """
         from packaging.requirements import Requirement
 
         result = subprocess.run(
@@ -203,6 +222,7 @@ class Extension(Generic[T]):
         return filtered
 
     def _initialize_process(self) -> None:
+        """Initialize queues, RPC, and launch the isolated process."""
         try:
             self.ctx = self.mp.get_context("spawn")
         except ValueError as e:
@@ -240,17 +260,20 @@ class Extension(Generic[T]):
         self.rpc.run()
 
     def get_proxy(self) -> T:
+        """Return (and memoize) the RPC caller for the remote extension."""
         if self.extension_proxy is None:
             self.extension_proxy = self.rpc.create_caller(self.extension_type, "extension")
         return self.extension_proxy
 
     def __getattr__(self, name: str):
+        """Delegate attribute access to the extension proxy, ensuring the process is running."""
         if name in ("_process_initialized", "ensure_process_started", "get_proxy", "name"):
             raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
         self.ensure_process_started()
         return getattr(self.get_proxy(), name)
 
     def stop(self) -> None:
+        """Stop the extension process and clean up queues/listeners."""
         errors: list[str] = []
 
         if hasattr(self, "proc") and self.proc.is_alive():
@@ -292,6 +315,7 @@ class Extension(Generic[T]):
             raise RuntimeError(f"Errors stopping {self.name}: {'; '.join(errors)}")
 
     def __launch(self):
+        """Launch the extension in a separate process after venv + deps are ready."""
         self._create_extension_venv()
         self._install_dependencies()
 
@@ -332,6 +356,7 @@ class Extension(Generic[T]):
         return proc
 
     def _ensure_uv(self) -> bool:
+        """Ensure ``uv`` is available; install via pip if missing."""
         if shutil.which("uv"):
             return True
         try:
@@ -344,6 +369,7 @@ class Extension(Generic[T]):
             return False
 
     def _create_extension_venv(self):
+        """Create the virtual environment for this extension if it does not exist."""
         self.venv_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.venv_path.exists():
@@ -377,6 +403,7 @@ class Extension(Generic[T]):
                 pth_file.write_text(pth_content)
 
     def _install_dependencies(self):
+        """Install extension dependencies into the venv, skipping already-satisfied ones."""
         if os.name == "nt":
             python_exe = self.venv_path / "Scripts" / "python.exe"
         else:
@@ -477,4 +504,5 @@ class Extension(Generic[T]):
         )
 
     def join(self):
+        """Join the child process, blocking until it exits."""
         self.proc.join()

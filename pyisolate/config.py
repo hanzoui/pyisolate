@@ -15,7 +15,12 @@ _CORE_TORCH_PACKAGES = frozenset({'torch', 'torchvision', 'torchaudio', 'torchte
 
 @functools.lru_cache(maxsize=1)
 def get_torch_ecosystem_packages() -> frozenset[str]:
-    """Discover torch/nvidia/triton packages to exclude when share_torch=true."""
+    """Dynamically discover torch ecosystem packages from the host environment.
+
+    Queries installed packages matching ``torch*``, ``nvidia-*``, and ``triton*``
+    patterns so we can safely exclude them from isolated installs when
+    ``share_torch=True``.
+    """
     packages: set[str] = set(_CORE_TORCH_PACKAGES)
     try:
         for dist in importlib_metadata.distributions():
@@ -28,15 +33,32 @@ def get_torch_ecosystem_packages() -> frozenset[str]:
 
 
 class ExtensionManagerConfig(TypedDict):
-    """Configuration for ExtensionManager."""
+    """Configuration for the :class:`ExtensionManager`.
+
+    Controls where isolated virtual environments are created for extensions.
+    """
+
     venv_root_path: str
+    """Root directory where isolated venvs will be created (one subdir per extension)."""
 
 
 class ExtensionConfig(TypedDict):
-    """Configuration for a single extension."""
+    """Configuration for a single extension managed by PyIsolate."""
+
     name: str
+    """Unique name for the extension (used for venv directory naming)."""
+
     module_path: str
+    """Filesystem path to the extension package containing ``__init__.py``."""
+
     isolated: bool
+    """Whether to run the extension in an isolated venv versus the host process."""
+
     dependencies: list[str]
+    """List of pip requirement specifiers to install into the extension venv."""
+
     apis: list[type[ProxiedSingleton]]
+    """ProxiedSingleton classes exposed to this extension for shared services."""
+
     share_torch: bool
+    """If True, reuse host torch via torch.multiprocessing and zero-copy tensors."""

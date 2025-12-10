@@ -1,3 +1,16 @@
+"""PyIsolate child process entrypoint and path unification.
+
+Imported by isolated child processes during ``multiprocessing.spawn``. The
+module-level path setup must execute before any heavy imports so the child sees
+the preferred host root ahead of the isolated venv site-packages. Environment
+variables used here:
+
+- ``PYISOLATE_CHILD``: Indicates this interpreter is an isolated child process.
+- ``PYISOLATE_HOST_SNAPSHOT``: JSON snapshot containing host ``sys.path`` and env vars.
+- ``PYISOLATE_MODULE_PATH``: Path to the extension being loaded (used to detect a preferred root).
+- ``PYISOLATE_PATH_DEBUG``: Enables verbose sys.path logging when set.
+"""
+
 import asyncio
 import importlib.util
 import json
@@ -17,13 +30,17 @@ from .shared import AsyncRPC, set_child_rpc_instance
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# PATH UNIFICATION (module import time, child only)
+# Runs before any heavy imports so the child sees the preferred host root first.
+# ---------------------------------------------------------------------------
 if os.environ.get("PYISOLATE_CHILD") and os.environ.get("PYISOLATE_HOST_SNAPSHOT"):
     root = logging.getLogger()
     for handler in root.handlers[:]:
         root.removeHandler(handler)
     logging.lastResort = None
 
-    # Suppress ALL ComfyUI dependencies by loading requirements.txt
+    # Suppress dependency logs by loading requirements.txt when available
     import re
     snapshot = json.loads(Path(os.environ["PYISOLATE_HOST_SNAPSHOT"]).read_text())
     comfy_root = Path(snapshot.get("comfy_root", ""))
@@ -39,6 +56,7 @@ if os.environ.get("PYISOLATE_CHILD") and os.environ.get("PYISOLATE_HOST_SNAPSHOT
             logging.getLogger(pkg_name).setLevel(logging.ERROR)
 
     class _ChildLogFilter(logging.Filter):
+        # Prevent noisy host-startup messages from being duplicated by each child
         _SUPPRESS = ("Total VRAM", "pytorch version:", "Set vram state to:",
                      "Device: cuda", "Enabled pinned memory", "Checkpoint files",
                      "working around nvidia", "Using pytorch attention")
@@ -65,6 +83,7 @@ if os.environ.get("PYISOLATE_CHILD") and os.environ.get("PYISOLATE_HOST_SNAPSHOT
             if len(parts) > 1:
                 comfy_root = parts[0] + "ComfyUI"
 
+        # Rebuild sys.path with preferred root first, then child venv, then host paths
         unified_path = build_child_sys_path(
             snapshot.get("sys_path", []),
             extra_paths,
@@ -74,6 +93,7 @@ if os.environ.get("PYISOLATE_CHILD") and os.environ.get("PYISOLATE_HOST_SNAPSHOT
         sys.path.clear()
         sys.path.extend(unified_path)
 
+        # Validate path stitching worked for required imports
         import utils.json_util  # noqa: F401
 
 
@@ -85,6 +105,19 @@ async def async_entrypoint(
     from_extension,
     log_queue,
 ) -> None:
+    """Asynchronous entrypoint for isolated extension processes.
+
+    Sets up the RPC channel, registers proxies for shared singletons, imports the
+    extension module, and runs lifecycle hooks inside the isolated process.
+
+    Args:
+        module_path: Absolute path to the extension module directory.
+        extension_type: ``ExtensionBase`` subclass to instantiate.
+        config: Extension configuration (dependencies, APIs, share_torch, etc.).
+        to_extension: Queue carrying host → extension RPC messages.
+        from_extension: Queue carrying extension → host RPC messages.
+        log_queue: Optional queue for forwarding child logs to the host.
+    """
     if os.environ.get("PYISOLATE_CHILD") and log_queue is not None:
         root = logging.getLogger()
         root.addHandler(QueueHandler(log_queue))
@@ -196,6 +229,11 @@ def entrypoint(
     from_extension,
     log_queue,
 ) -> None:
+    """Synchronous wrapper around :func:`async_entrypoint`.
+
+    This is invoked by ``multiprocessing.Process`` and simply drives the async
+    entrypoint inside a fresh asyncio event loop.
+    """
     asyncio.run(
         async_entrypoint(
             module_path, extension_type, config,

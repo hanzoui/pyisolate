@@ -19,6 +19,7 @@ from typing import (
     get_type_hints,
 )
 
+# We only import this to get type hinting working. It can also be a torch.multiprocessing
 if TYPE_CHECKING:
     import multiprocessing as typehint_mp
 else:
@@ -27,22 +28,42 @@ else:
 
 logger = logging.getLogger(__name__)
 
-_debug_rpc = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
+# Debug flag for verbose RPC message logging (set via PYISOLATE_DEBUG_RPC=1)
+debug_all_messages = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
+_debug_rpc = debug_all_messages
+
+
+def debugprint(*args, **kwargs):
+    if debug_all_messages:
+        logger.debug(" ".join(str(arg) for arg in args))
+
+
+# Global RPC instance for child process (set during initialization)
 _child_rpc_instance: Any = None
 
 
 def set_child_rpc_instance(rpc: Any) -> None:
+    """Set the global RPC instance for use inside isolated child processes."""
     global _child_rpc_instance
     _child_rpc_instance = rpc
 
 
 def get_child_rpc_instance() -> Any:
+    """Return the current child-process RPC instance (if any)."""
     return _child_rpc_instance
 
 
 def _tensor_to_cpu(obj: Any) -> Any:
+    """Recursively convert CUDA tensors to CPU and serialize isolation objects.
+
+    Converts ModelPatcher proxies to reference dictionaries and downgrades
+    unpicklable custom objects into safe representations for RPC transport.
+    This mirrors the original behavior that avoided cudaMallocAsync IPC issues
+    by normalizing tensors to CPU and by warning on custom container subclasses.
+    """
     type_name = type(obj).__name__
 
+    # Custom serialization hook for ModelPatcher
     if type_name == 'ModelPatcher':
         try:
             from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
@@ -51,6 +72,7 @@ def _tensor_to_cpu(obj: Any) -> Any:
         except ImportError:
             pass
 
+    # Handle ModelPatcherProxy - convert to ref (child returning proxy to host)
     if type_name == 'ModelPatcherProxy':
         try:
             return {"__type__": "ModelPatcherRef", "model_id": obj._instance_id}
@@ -65,23 +87,35 @@ def _tensor_to_cpu(obj: Any) -> Any:
         pass
 
     if isinstance(obj, dict):
+        # Check if this is a dict subclass from a custom module
         dict_class = type(obj)
         dict_module = getattr(dict_class, '__module__', '') or ''
         if dict_class is not dict and dict_module and not dict_module.startswith(
                 ('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing')):
+            # Custom dict subclass - convert to plain dict
             return {k: _tensor_to_cpu(v) for k, v in obj.items()}
         return {k: _tensor_to_cpu(v) for k, v in obj.items()}
 
     if isinstance(obj, (list, tuple)):
+        # Check if this is a list/tuple subclass from a custom module
+        seq_class = type(obj)
+        seq_module = getattr(seq_class, '__module__', '') or ''
+        if seq_class not in (list, tuple) and seq_module and not seq_module.startswith(
+                ('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing')):
+            # Custom sequence subclass - convert to plain list/tuple
+            converted = [_tensor_to_cpu(item) for item in obj]
+            return tuple(converted) if isinstance(obj, tuple) else converted
         converted = [_tensor_to_cpu(item) for item in obj]
         return tuple(converted) if isinstance(obj, tuple) else converted
 
+    # Safety check: primitives pass through, complex objects need pickle validation
     if isinstance(obj, (str, int, float, bool, type(None), bytes)):
         return obj
 
     obj_module = getattr(type(obj), '__module__', '') or ''
     if obj_module and not obj_module.startswith(
             ('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing', 'collections', 'abc')):
+        # This is likely a custom node object - convert to serializable form
         return {
             "__pyisolate_unpicklable__": True,
             "type": type(obj).__name__,
@@ -93,6 +127,12 @@ def _tensor_to_cpu(obj: Any) -> Any:
 
 
 def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
+    """Rehydrate ModelPatcher references and containers after an RPC round-trip.
+
+    Previously this converted CPU tensors back to CUDA, but image tensors are
+    expected to remain on CPU. Now this is a no-op passthrough except for reference
+    objects and container recursion.
+    """
     if isinstance(obj, dict) and obj.get("__type__") == "ModelPatcherRef":
         try:
             is_child = os.environ.get("PYISOLATE_CHILD") == "1"

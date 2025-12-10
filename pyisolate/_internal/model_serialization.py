@@ -1,3 +1,11 @@
+"""
+Custom serialization helpers for PyIsolate.
+
+These helpers let PyIsolate transparently move tensors and registered objects
+across process boundaries. ModelPatcher/CLIP/VAE objects are converted to
+lightweight references while preserving tensor sharing semantics.
+"""
+
 import logging
 from typing import Any
 
@@ -7,7 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 def prepare_tensors_for_rpc(data: Any) -> Any:
-    """Move CUDA tensors to CPU shared memory for zero-copy transfer."""
+    """Recursively move CUDA tensors to CPU shared memory for zero-copy transfer.
+
+    This handles the tensor transport layer for host→child RPC calls. We prefer CPU
+    shared memory for debuggability even though CUDA IPC is possible.
+    """
     if isinstance(data, torch.Tensor):
         if data.is_cuda:
             cpu_tensor = data.to("cpu", copy=True)
@@ -28,7 +40,11 @@ def prepare_tensors_for_rpc(data: Any) -> Any:
 
 
 def move_tensors_to_device(data: Any, device: torch.device) -> Any:
-    """Move CPU tensors to specified device."""
+    """Recursively move CPU tensors back to the specified device.
+
+    Used on the host to move RPC arguments from CPU shared memory back to GPU
+    before executing ModelPatcher or other host calls.
+    """
     if isinstance(data, torch.Tensor):
         if str(data.device) != str(device):
             return data.to(device)
@@ -45,7 +61,12 @@ def move_tensors_to_device(data: Any, device: torch.device) -> Any:
 
 
 def serialize_for_isolation(data: Any) -> Any:
-    """Serialize data for transmission to isolated process (host side)."""
+    """Serialize data for transmission to an isolated process (host side).
+
+    ModelPatcher/CLIP/VAE objects are converted to reference dictionaries so the
+    isolated process can fetch them lazily. RemoteObjectHandle instances are passed
+    through to preserve identity without pickling heavyweight objects.
+    """
     type_name = type(data).__name__
 
     # If this object originated as a RemoteObjectHandle, prefer to send the
@@ -110,12 +131,11 @@ def serialize_for_isolation(data: Any) -> Any:
 
 
 async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: bool = False) -> Any:
-    """Deserialize data from isolated process (host side).
+    """Deserialize data received from an isolated process (host side).
 
-    Top-level `RemoteObjectHandle` values are resolved to concrete objects when an
-    extension proxy is available. Nested handles (e.g., inside dict/list payloads)
-    are preserved so they can be returned to the isolated process without forcing
-    pickling/unpickling of large or unpicklable objects (torch modules, etc.).
+    Top-level ``RemoteObjectHandle`` values are resolved to concrete objects when an
+    extension proxy is available. Nested handles stay opaque so they can be returned
+    back to the child without forcing unnecessary pickling/unpickling.
     """
     from comfy.isolation.extension_wrapper import RemoteObjectHandle
 
@@ -174,7 +194,12 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
 
 
 def deserialize_proxy_result(data: Any) -> Any:
-    """Deserialize RPC result in isolated process (child side)."""
+    """Deserialize RPC results in the isolated process (child side).
+
+    Reference dictionaries emitted by the host are converted into the appropriate
+    proxy instances (ModelPatcherProxy, CLIPProxy, VAEProxy) while preserving
+    container structure.
+    """
     if isinstance(data, dict):
         ref_type = data.get("__type__")
 
