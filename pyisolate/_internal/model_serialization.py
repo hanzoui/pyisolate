@@ -68,6 +68,10 @@ def serialize_for_isolation(data: Any) -> Any:
         from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
         model_id = ModelPatcherRegistry().register(data)
         return {"__type__": "ModelPatcherRef", "model_id": model_id}
+    
+    if type_name == 'ModelPatcherProxy':
+        # Already a proxy, return ref dict
+        return {"__type__": "ModelPatcherRef", "model_id": data._instance_id}
 
     if type_name == 'CLIP':
         try:
@@ -76,6 +80,22 @@ def serialize_for_isolation(data: Any) -> Any:
             return {"__type__": "CLIPRef", "clip_id": clip_id}
         except ImportError:
             return data
+    
+    if type_name == 'CLIPProxy':
+        # Already a proxy, return ref dict
+        return {"__type__": "CLIPRef", "clip_id": data._instance_id}
+
+    if type_name == 'VAE':
+        try:
+            from comfy.isolation.vae_proxy import VAERegistry
+            vae_id = VAERegistry().register(data)
+            return {"__type__": "VAERef", "vae_id": vae_id}
+        except ImportError:
+            return data
+    
+    if type_name == 'VAEProxy':
+        # Already a proxy, return as-is (return the ref dict)
+        return {"__type__": "VAERef", "vae_id": data._instance_id}
 
     if isinstance(data, dict):
         if data.get("__type__") == "ModelPatcherRef":
@@ -131,6 +151,10 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
             from comfy.isolation.clip_proxy import CLIPRegistry
             return CLIPRegistry()._get_instance(data["clip_id"])
 
+        if ref_type == "VAERef":
+            from comfy.isolation.vae_proxy import VAERegistry
+            return VAERegistry()._get_instance(data["vae_id"])
+
         deserialized: dict[str, Any] = {}
         for k, v in data.items():
             # Dict entries are considered nested to preserve handles inside
@@ -161,6 +185,10 @@ def deserialize_proxy_result(data: Any) -> Any:
         if ref_type == "CLIPRef":
             from comfy.isolation.clip_proxy import CLIPProxy
             return CLIPProxy(data["clip_id"], registry=None, manage_lifecycle=False)
+
+        if ref_type == "VAERef":
+            from comfy.isolation.vae_proxy import VAEProxy
+            return VAEProxy(data["vae_id"])
 
         return {k: deserialize_proxy_result(v) for k, v in data.items()}
 
