@@ -19,6 +19,71 @@ from typing import (
     get_type_hints,
 )
 
+
+class AttrDict(dict):
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError as e:
+            raise AttributeError(item) from e
+
+    def copy(self):
+        return AttrDict(super().copy())
+
+
+class AttributeContainer:
+    """
+    Non-dict container with attribute access and copy support.
+    Prevents downstream code from downgrading to plain dict via dict(obj) / {**obj}.
+    """
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def __getattr__(self, name):
+        if "_data" not in self.__dict__:
+            raise AttributeError(name)
+        try:
+            return self._data[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def copy(self):
+        return AttributeContainer(self._data.copy())
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def keys(self):
+        return self._data.keys()
+
+    def items(self):
+        return self._data.items()
+
+    def values(self):
+        return self._data.values()
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __repr__(self):
+        return f"AttributeContainer({getattr(self, '_data', '<empty>')})"
+
+    def __getstate__(self):
+        return self._data
+
+    def __setstate__(self, state):
+        self._data = state
+
 # We only import this to get type hinting working. It can also be a torch.multiprocessing
 if TYPE_CHECKING:
     import multiprocessing as typehint_mp
@@ -146,7 +211,14 @@ def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
             pass
 
     if isinstance(obj, dict):
-        return {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
+        if obj.get("__pyisolate_attribute_container__") and "data" in obj:
+            converted = {k: _tensor_to_cuda(v, device) for k, v in obj["data"].items()}
+            return AttributeContainer(converted)
+        if obj.get("__pyisolate_attrdict__") and "data" in obj:
+            converted = {k: _tensor_to_cuda(v, device) for k, v in obj["data"].items()}
+            return AttrDict(converted)
+        converted = {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
+        return AttrDict(converted)
     if isinstance(obj, (list, tuple)):
         converted = [_tensor_to_cuda(item, device) for item in obj]
         return type(obj)(converted) if isinstance(obj, tuple) else converted
