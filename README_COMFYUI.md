@@ -147,13 +147,57 @@ Prompt executed in 8.49 seconds
 - ~1ms overhead per RPC call
 - No memory duplication
 
-✅ **ComfyUI V3 API support (`comfy_api.latest`):**
+✅ **ComfyUI V3 API support - at least one node tested with (`comfy_api.latest`):**
+   ### Core
+   - io.ComfyNode
+   - io.NodeOutput
+   - io.Schema
 
-All standard V3 API patterns work in isolated nodes:
-- **I/O Types:** `IO.IMAGE`, `IO.MASK`, `IO.LATENT`, `IO.STRING`, `IO.INT`, `IO.FLOAT`, etc.
-- **PromptServer calls:** `PromptServer.instance.send_sync()`, `.send()`, `.client_id`
-- **Node base classes:** Inherit from `ComfyNodeABC` as usual
-- **Type hints:** `InputTypeDict`, `OutputTypeDict` work normally
+   ### Numeric & Combo
+   - io.Int, io.Int.Input
+   - io.Float, io.Float.Input, io.Float.Output
+   - io.Combo, io.Combo.Input
+
+   ### Text & Flags
+   - io.String, io.String.Input
+   - io.Boolean, io.Boolean.Input
+
+   ### Images, Latents, Conditioning
+   - io.Image, io.Image.Input, io.Image.Type
+   - io.Latent, io.Latent.Input, io.Latent.Output
+   - io.Conditioning, io.Conditioning.Input, io.Conditioning.Output
+   - io.Sigmas, io.Sigmas.Input
+
+   ### Models & Samplers
+   - io.Model, io.Model.Input, io.Model.Output
+   - io.Vae, io.Vae.Input
+   - io.Sampler.Input
+   - io.UpscaleModel, io.UpscaleModel.Input, io.UpscaleModel.Output
+   - io.LatentUpscaleModel.Input, io.LatentUpscaleModel.Output
+   - io.ControlNet.Output
+   - io.Guider.Input
+   - io.WanCameraEmbedding, io.WanCameraEmbedding.Input
+
+   ### CLIP / Vision
+   - io.ClipVisionOutput, io.ClipVisionOutput.Input
+
+   ### Media
+   - io.Video, io.Video.Input, io.Video.Output
+   - io.Audio, io.Audio.Output
+   - io.AudioEncoder.Input, io.AudioEncoder.Output, io.AudioEncoderOutput.Output
+
+   ### Geometry / Voxel
+   - io.Mesh, io.Mesh.Input, io.Mesh.Output
+   - io.Voxel, io.Voxel.Input, io.Voxel.Output
+
+   ### Misc
+   - io.Hidden, io.Hidden.prompt, io.Hidden.extra_pnginfo
+   - io.FolderType, io.FolderType.output
+   - io.MatchType, io.MatchType.Input, io.MatchType.Output, io.MatchType.Template
+   - io.Photomaker.Input, io.Photomaker.Output
+   - io.UploadType, io.UploadType.video
+   - io.AnyType, io.AnyType.Output
+
 
 See [Appendix: Supported APIs](#appendix-supported-apis) for complete function lists.
 
@@ -265,27 +309,3 @@ Three working isolated custom node packs are available for reference:
 ### "Torch already imported" warning spam
 **Cause:** Isolated processes reload torch, triggering ComfyUI's warning.
 **Fix:** Known issue
-
----
-
-#
----
-
-## FAQ
-
-### Q: Can I use this on ComfyUI Cloud?
-**A:** Yes, that's a primary use case. Isolation enables running diverse custom nodes without dependency conflicts in cloud environments.
-
-### Q: Does this work with Manager?
-**A:** Yes, ComfyUI Manager can install isolated nodes normally. The `pyisolate.yaml` is detected automatically.
-
-### Q: Can I mix isolated and non-isolated nodes?
-**A:** Yes, absolutely. Only nodes with `pyisolate.yaml` are isolated. Others run normally in the host process.
-
-### Q: What about security/sandboxing?
-**A:** Current focus is dependency isolation. Security sandboxing (filesystem, network restrictions) is planned for future releases.
-
-### Q: Does this work on Windows/Mac/Linux?
-**A:** Developed on linux, periodically tested on windoes.
-
----
