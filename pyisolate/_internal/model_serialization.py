@@ -91,7 +91,6 @@ def serialize_for_isolation(data: Any) -> Any:
         pass
 
     if type_name == 'ModelPatcher':
-        logger.warning("[serialize_for_isolation] ModelPatcher child=%s has_id=%s", os.environ.get("PYISOLATE_CHILD") == "1", hasattr(data, "_instance_id"))
         if os.environ.get("PYISOLATE_CHILD") == "1":
             if hasattr(data, "_instance_id"):
                 return {"__type__": "ModelPatcherRef", "model_id": getattr(data, "_instance_id")}
@@ -104,7 +103,7 @@ def serialize_for_isolation(data: Any) -> Any:
         # Already a proxy, return ref dict
         return {"__type__": "ModelPatcherRef", "model_id": data._instance_id}
 
-    if type_name == 'CLIP':
+    if type_name == 'CLIP' or hasattr(data, 'tokenize'):
         try:
             from comfy.isolation.clip_proxy import CLIPRegistry
             clip_id = CLIPRegistry().register(data)
@@ -129,7 +128,6 @@ def serialize_for_isolation(data: Any) -> Any:
         return {"__type__": "VAERef", "vae_id": data._instance_id}
 
     if type_name.startswith('ModelSampling'):
-        logger.warning("[serialize_for_isolation] ModelSampling child=%s has_id=%s", os.environ.get("PYISOLATE_CHILD") == "1", hasattr(data, "_instance_id"))
         if os.environ.get("PYISOLATE_CHILD") == "1":
             if hasattr(data, "_instance_id"):
                 return {"__type__": "ModelSamplingRef", "ms_id": getattr(data, "_instance_id")}
