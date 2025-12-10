@@ -87,7 +87,7 @@ if os.environ.get("PYISOLATE_CHILD") and os.environ.get("PYISOLATE_HOST_SNAPSHOT
         unified_path = build_child_sys_path(
             snapshot.get("sys_path", []),
             extra_paths,
-            comfy_root=comfy_root
+            preferred_root=comfy_root
         )
 
         sys.path.clear()
