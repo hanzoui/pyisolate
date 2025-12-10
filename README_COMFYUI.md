@@ -35,11 +35,11 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 cd ComfyUI
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install pyisolate
-pip install pyisolate
+Clone from pollockjj's repo:
+git clone https://github.com/pollockjj/pyisolate
+cd pyisolate
+git install .
 
-# Or install from source for latest features
-pip install git+https://github.com/Comfy-Org/pyisolate.git
 ```
 
 ### Enable Isolation in ComfyUI
@@ -63,7 +63,7 @@ In the custom node directory, create a `pyisolate.yaml` file:
 ```yaml
 # custom_nodes/MyAwesomeNode/pyisolate.yaml
 isolated: true
-share_torch: true  # Enable zero-copy PyTorch tensor sharing
+share_torch: true  # Enable `zero-copy` PyTorch tensor sharing - Allows fast copy of tensors, but at a higher memory and filespace footprint
 
 dependencies:
   - numpy==2.0.0        # Node specific numpy version
@@ -78,20 +78,63 @@ cd ComfyUI
 python main.py --use-process-isolation
 ```
 
-**Expected logs:**
+**Expected logs - Loading:**
+PyIsolate and internal functions that use it use a "][" as log prefix. 
 ```
-][ MyAwesomeNode loaded from cache
-][ MyAwesomeNode - just-in-time spawning of isolated custom_node
+][ ComfyUI-IsolationTest cache miss, spawning process for metadata  # First run or cache invalidation
+][ ComfyUI-PyIsolatedV3 loaded from cache                           # Subsequent runs where nodes and environment is unchanged so cache is reused
+][ ComfyUI-APIsolated loaded from cache
+][ ComfyUI-DepthAnythingV2 loaded from cache
+
+][ ComfyUI-IsolationTest metadata cached
+][ ComfyUI-IsolationTest ejecting after metadata extraction
 ```
 
-### Step 3: Verify Isolation Works
 
-Run a workflow that uses the node. Check that:
-- ✅ Node executes successfully
-- ✅ No dependency conflicts appear
-- ✅ Performance is acceptable (first run spawns process, subsequent runs reuse it)
+**Expected logs - Reporting:**
+```
+Import times for custom nodes:
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/websocket_image_save.py
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/comfyui-florence2
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/comfyui-videohelpersuite
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-GGUF
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/comfyui-kjnodes
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-Manager
+   0.1 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-Crystools
+   0.3 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-WanVideoWrapper
+   0.4 seconds: /home/johnj/ComfyUI/custom_nodes/RES4LYF
 
----
+
+Import times for isolated custom nodes:
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-DepthAnythingV2
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-PyIsolatedV3
+   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-APIsolated
+   3.2 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-IsolationTest     #First-time cost
+```
+
+
+**Expected logs - during workflow usage:**
+```
+got prompt  # A new workflow where isolated nodes are used
+][ ComfyUI-PyIsolatedV3 - just-in-time spawning of isolated custom_node
+][ ComfyUI-APIsolated - just-in-time spawning of isolated custom_node
+Prompt executed in 68.34 seconds
+
+got prompt  # same workflow
+Prompt executed in 61.68 seconds
+
+got prompt  # different workflow, same two custom_nodes used
+Prompt executed in 72.29 seconds
+
+got prompt  # same 2nd workflow as above
+Prompt executed in 66.17 seconds
+
+got prompt   # new workflow, no isolated nodes used
+][ ComfyUI-APIsolated isolated custom_node not in execution graph, evicting
+][ ComfyUI-PyIsolatedV3 isolated custom_node not in execution graph, evicting
+Prompt executed in 8.49 seconds
+
+```
 
 ## What Works
 
@@ -99,7 +142,7 @@ Run a workflow that uses the node. Check that:
 - Any standard Python code inside node functions using Comfy standard imports and each custom_node's pysiolate.yaml's dependencies
 - Custom dependencies and conflicting library versions in isolated custom_nodes
 
-✅ **Zero-copy tensor sharing:**
+✅ **Zero-copy tensor sharing (linux only):**
 - PyTorch tensors pass between processes without serialization
 - ~1ms overhead per RPC call
 - No memory duplication
@@ -131,10 +174,10 @@ See [Appendix: Supported APIs](#appendix-supported-apis) for complete function l
 | `STRING` | ✅ Works | Primitive type |
 | `BOOLEAN` | ✅ Works | Primitive type |
 | `CONDITIONING` | ✅ Works | List of tuples with tensors |
-| `CONTROL_NET` | ⚠️ Partial | Depends on structure |
-| `MODEL` | ❌ Doesn't work | ModelPatcher object, not serializable |
-| `CLIP` | ❌ Doesn't work | Complex object with state |
-| `VAE` | ❌ Doesn't work | Complex object with state |
+| `CONTROL_NET` | unknown | Not tested |
+| `MODEL` | ⚠️ Basic | ModelPatcher object, standard inference |
+| `CLIP` | ⚠️ Basic | standard CLIP decoding tested isolated |
+| `VAE` | ⚠️ Basic | standard VAE decoding tested isolated |
 
 **Key insight:** Any ComfyUI type that is fundamentally a **tensor, dict, list, or primitive** will work. Complex stateful objects like `MODEL`, `CLIP`, `VAE` cannot cross the isolation boundary (yet).
 
@@ -144,12 +187,6 @@ See [Appendix: Supported APIs](#appendix-supported-apis) for complete function l
 ---
 
 ## What Doesn't Work
-
-❌ **Complex ComfyUI objects:**
-- `ModelPatcher` objects - Cannot be serialized across process boundary
-- `ModelSampler` objects - Tied to host process state
-- Full `CLIP` objects - Use proxied versions instead
-- Full `VAE` objects - Use proxied versions instead
 
 ❌ **PromptServer route decoration:**
 ```python
@@ -191,9 +228,9 @@ Three working isolated custom node packs are available for reference:
 ### Startup Time
 | Scenario | Time | Notes |
 |----------|------|-------|
-| **First run (cache miss)** | ~200-500ms per node | Creates venv, installs deps, caches metadata |
-| **Subsequent runs (cache hit)** | ~5-20ms per node | Loads cached metadata, no spawn |
-| **Process spawn on first execution** | ~200-500ms | Only when node first executes in workflow |
+| **First run (cache miss)** | speed dependent environment | Creates venv, installs deps, caches metadata |
+| **Subsequent runs (cache hit)** | almost instantaneous | Loads cached metadata, no spawn |
+| **Process spawn on first execution** | 1-3 seconds (background) | Only when node first executes in workflow |
 
 ### Runtime Overhead
 | Operation | Overhead | Impact |
@@ -203,7 +240,7 @@ Three working isolated custom node packs are available for reference:
 | **Large model loading** | Same as non-isolated | No overhead |
 
 ### Memory Footprint
-- **Per isolated node:** ~50-100MB (process overhead)
+- **Per isolated node:** ~50-300MB
 - **Tensors:** Shared memory (no duplication)
 - **Models:** Can be shared via ProxiedSingleton
 
@@ -227,78 +264,11 @@ Three working isolated custom node packs are available for reference:
 
 ### "Torch already imported" warning spam
 **Cause:** Isolated processes reload torch, triggering ComfyUI's warning.
-**Fix:** This is cosmetic and harmless. The warning is suppressed in PyIsolate >=0.2.0.
+**Fix:** Known issue
 
 ---
 
-## Advanced: Web Routes
-
-If a node registers web routes, you need a `route_manifest.json`:
-
-```json
-{
-  "routes": [
-    {
-      "method": "GET",
-      "path": "/my_node/status",
-      "handler": "get_status"
-    },
-    {
-      "method": "POST",
-      "path": "/my_node/process",
-      "handler": "process_data"
-    }
-  ]
-}
-```
-
-Then define handlers as async methods in your extension class:
-
-```python
-# __init__.py
-class MyNodeExtension(ExtensionBase):
-    async def get_status(self, request):
-        return {"status": "ok"}
-    
-    async def process_data(self, request):
-        data = await request.json()
-        result = await self.extension.process(data)
-        return {"result": result}
-```
-
-Routes are automatically injected by PyIsolate's route injection system.
-
----
-
-## Advanced: Shared Services (ProxiedSingleton)
-
-Share state across all isolated nodes:
-
-```python
-# In ComfyUI core or shared module
-from pyisolate import ProxiedSingleton
-
-class ModelCache(ProxiedSingleton):
-    def __init__(self):
-        self.models = {}
-    
-    async def get_model(self, name):
-        if name not in self.models:
-            self.models[name] = load_expensive_model(name)
-        return self.models[name]
-```
-
-```python
-# In isolated node
-class MyNode:
-    def process(self, model_name):
-        cache = ModelCache()  # Returns proxy to host's singleton
-        model = await cache.get_model(model_name)
-        return model.predict(...)
-```
-
-This allows expensive resources (models, database connections) to be shared across all isolated nodes without duplication.
-
+#
 ---
 
 ## FAQ
@@ -316,177 +286,6 @@ This allows expensive resources (models, database connections) to be shared acro
 **A:** Current focus is dependency isolation. Security sandboxing (filesystem, network restrictions) is planned for future releases.
 
 ### Q: Does this work on Windows/Mac/Linux?
-**A:** Yes, tested on all three platforms.
+**A:** Developed on linux, periodically tested on windoes.
 
 ---
-
-## Getting Help
-
-- **GitHub Issues:** https://github.com/Comfy-Org/pyisolate/issues
-- **Example Nodes:** See [Live Examples](#live-examples) section
-- **Technical Docs:** https://comfy-org.github.io/pyisolate/
-
----
-
-## For Tomorrow's Demo
-
-### What to Show
-1. ✅ **Process isolation working**: Run workflow with isolated nodes, show logs
-2. ✅ **Converting a node pack**: Live demo of adding `pyisolate.yaml`
-3. ✅ **What "just works"**: Show ComfyUI-IsolationTest (70+ nodes working)
-4. ✅ **What doesn't work**: Explain web routes limitation, show route manifest solution
-
-### Performance Numbers to Highlight
-- Cache hit startup: **~10ms per node** (instant)
-- Cache miss startup: **~300ms per node** (one-time cost)
-- Runtime overhead: **~1ms per node execution** (<0.1% of typical workflow)
-- Memory: **Shared tensors, no duplication**
-
-### Questions to Prepare For
-1. **"Which node packs work on Cloud now?"**
-   - Any node pack that doesn't use module-level web routes
-   - See ComfyUI-APIsolated and ComfyUI-IsolationTest as proof
-
-2. **"What's the performance impact?"**
-   - See table above: ~1ms per execution, negligible for real workflows
-
-3. **"Can users opt out?"**
-   - Yes, just remove `pyisolate.yaml` or don't use `--use-process-isolation` flag
-
-4. **"What about arbitrary code execution risks?"**
-   - Current version: dependency isolation only
-   - Future: filesystem/network sandboxing planned
-   - Briefly show concept, but clarify it's not production-ready for untrusted code
-
----
-
-**Ready to isolate?** Start with the [Quick Start](#installation) or check out the [Live Examples](#live-examples).
-
----
-
-## Appendix: Supported APIs
-
-### V1 `model_management` Functions (Proxied)
-
-All standard model management functions are available in isolated nodes:
-
-**Device Management:**
-- `get_torch_device()` - Get the primary torch device
-- `get_torch_device_name(device)` - Get device name string
-- `unet_offload_device()` - Get offload device for models
-- `vram_device()` - Get VRAM device
-- `cpu_mode()` - Check if CPU-only mode
-- `should_use_fp16()` - Check FP16 usage
-
-**Memory Management:**
-- `soft_empty_cache()` - Soft CUDA cache clear
-- `unload_all_models()` - Unload all models from memory
-- `get_free_memory(device)` - Get available memory
-- `get_total_memory(device)` - Get total device memory
-
-### V1 `folder_paths` Functions (Proxied)
-
-All path resolution and file discovery functions work:
-
-**Directory Access:**
-- `get_input_directory()` - Get input folder path
-- `get_output_directory()` - Get output folder path
-- `get_temp_directory()` - Get temp folder path
-- `get_folder_paths(folder_name)` - Get all paths for a folder type
-- `models_dir` - Base models directory
-
-**Model Discovery:**
-- `get_filename_list(folder_name)` - List files in folder
-- `get_full_path(folder_name, filename)` - Resolve full path
-- `get_annotated_filepath(name)` - Get path with annotations
-- `exists_annotated_filepath(name)` - Check annotated path exists
-
-**Model Registration:**
-- `add_model_folder_path(folder_name, full_folder_path)` - Register model folder
-- `get_supported_pt_extensions()` - Get PyTorch file extensions
-
-### V3 `comfy_api.latest` Support (Our current focus. Here is what's actually tested so far)
-
-**✅ TESTED AND WORKING:**
-
-**Node Base Classes:**
-- `io.ComfyNode` - Base class for V3 nodes ✅
-- `io.Input`, `io.WidgetInput`, `io.Output` - Input/output base classes ✅
-- `io.Schema` - Node schema definition ✅
-
-**Primitive Types (Fully Working):**
-- `io.Boolean`, `io.Int`, `io.Float`, `io.String` ✅
-- `io.Combo` ✅
-
-**Data Types (Serializable - Fully Working):**
-- `io.Image` - PyTorch tensor, zero-copy ✅
-- `io.Mask` - PyTorch tensor, zero-copy ✅
-- `io.Latent` - Dict with tensors ✅
-- `io.Conditioning` - List of tuples with tensors ✅
-
-**Execution API:**
-- `ComfyAPI.execution.set_progress()` - Progress updates ✅
-
-**Hidden Inputs:**
-- `Hidden.unique_id`, `Hidden.prompt`, `Hidden.extra_pnginfo` ✅
-
----
-
-**✅ DESIGNED TO WORK (V3 API Serialization-Friendly Types):**
-
-The V3 API was designed with serialization in mind. Most types use pure data structures:
-
-**Media & Tensors (All work via zero-copy):**
-- `io.Audio` - Dict with waveform tensor + sample_rate ✅
-- `io.Video` - Tensor-based ✅
-- `io.SVG` - String data ✅
-
-**Sampling & Noise:**
-- `io.Sigmas` - Tensor ✅
-- `io.Noise` - Serializable noise config ✅
-- `io.TimestepsRange` - Simple data structure ✅
-
-**3D & Analysis:**
-- `io.Mesh`, `io.Voxel` - Data structures (vertices, faces, etc.) ✅
-- `io.BBOX`, `io.Point`, `io.SEGS` - Coordinate data ✅
-- `io.LossMap` - Tensor-based ✅
-
-**Advanced (Likely work - need testing):**
-- `io.ControlNet` - Might be serializable ⚠️
-- `io.ClipVisionOutput` - Likely pure tensor output ⚠️
-- `io.UpscaleModel`, `io.LoraModel` - Need testing ⚠️
-- `io.Hooks`, `io.HookKeyframes` - Might be data structures ⚠️
-- All `Load3D*` types - Need testing ⚠️
-
----
-
-**❌ DEFINITIVELY DON'T WORK (Complex Objects):**
-
-These are TYPE HINTS for non-serializable ComfyUI objects:
-- `io.Model` - ModelPatcher object with methods/state ❌
-- `io.Clip` - CLIP object with methods/state ❌
-- `io.Vae` - VAE object with methods/state ❌
-- `io.Sampler` - Sampler object with methods ❌
-- `io.Guider` - CFGGuider object with methods ❌
-- `io.ClipVision` - ClipVisionModel object ❌
-- `io.StyleModel` - StyleModel object ❌
-- `io.Gligen` - ModelPatcher variant ❌
-- `io.AudioEncoder` - Encoder model object ❌
-- `io.FaceAnalysis` - Analysis model object ❌
-
-**Key insight:** The V3 API does ~80% of the heavy lifting. Most types are **designed** to be serializable (tensors, dicts, lists). Only the 8-10 "model object" types are problematic. `model_management` and `folder_paths` being fully proxied means V3 nodes get most ComfyUI functionality for free.
-
----
-
-**❌ KNOWN NOT TO WORK:**
-
-These require objects that cannot serialize across process boundaries:
-- **ModelPatcher operations** - `model.clone()`, `model.add_wrapper_with_key()`, etc.
-- **Direct Model/CLIP/VAE object manipulation** - These are complex stateful objects
-- Any node that calls `model.model_options` directly
-
-**Example that DOESN'T work:** The EasyCache node (attached) cannot be isolated because it requires direct ModelPatcher manipulation (`model.clone()`, `model.add_wrapper_with_key()`).
-
----
-
-**Bottom line:** If your node uses **primitives, images, masks, latents, or conditioning**, it will likely work. If it touches **models, samplers, or advanced objects**, extensive testing is required.

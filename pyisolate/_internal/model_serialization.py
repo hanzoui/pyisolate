@@ -16,13 +16,17 @@ logger = logging.getLogger(__name__)
 
 
 def prepare_tensors_for_rpc(data: Any) -> Any:
-    """Recursively move CUDA tensors to CPU shared memory for zero-copy transfer.
+    """Recursively prepare tensors for RPC.
 
-    This handles the tensor transport layer for host→child RPC calls. We prefer CPU
-    shared memory for debuggability even though CUDA IPC is possible.
+    If CUDA IPC env is enabled, leave CUDA tensors on device (torch.multiprocessing
+    will use CUDA IPC). Otherwise, move CUDA tensors to CPU shared memory.
     """
+    cuda_ipc = os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
+
     if isinstance(data, torch.Tensor):
         if data.is_cuda:
+            if cuda_ipc:
+                return data
             cpu_tensor = data.to("cpu", copy=True)
             cpu_tensor.share_memory_()
             return cpu_tensor

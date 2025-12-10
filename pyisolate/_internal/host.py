@@ -22,6 +22,32 @@ from .shared import AsyncRPC
 
 logger = logging.getLogger(__name__)
 
+
+def _probe_cuda_ipc_support() -> tuple[bool, str]:
+    """Best-effort probe for CUDA IPC support on Linux.
+
+    Returns:
+        (supported, reason)
+    """
+    if sys.platform != "linux":
+        return False, "CUDA IPC is only supported on Linux"
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - import guard
+        return False, f"torch import failed: {exc}"
+
+    if not torch.cuda.is_available():
+        return False, "torch.cuda.is_available() is False"
+
+    try:
+        # Minimal handle check: event with interprocess support + tiny tensor
+        torch.cuda.current_device()
+        _ = torch.cuda.Event(interprocess=True)
+        _ = torch.empty(1, device="cuda")
+        return True, "ok"
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, f"CUDA IPC probe failed: {exc}"
+
 _DANGEROUS_PATTERNS = ("&&", "||", ";", "|", "`", "$", "\n", "\r", "\0")
 _UNSAFE_CHARS = frozenset(' \t\n\r;|&$`()<>"\'\\!{}[]*?~#%=,:')
 
@@ -144,6 +170,13 @@ class Extension(Generic[T]):
         config: ExtensionConfig,
         venv_root_path: str,
     ) -> None:
+        force_ipc = os.environ.get("PYISOLATE_FORCE_CUDA_IPC") == "1"
+
+        if "share_cuda_ipc" not in config:
+            config["share_cuda_ipc"] = force_ipc
+        elif force_ipc:
+            config["share_cuda_ipc"] = True
+
         self.name = config["name"]
         self.normalized_name = normalize_extension_name(self.name)
 
@@ -157,6 +190,7 @@ class Extension(Generic[T]):
         self.module_path = module_path
         self.config = config
         self.extension_type = extension_type
+        self._cuda_ipc_enabled = False
 
         if self.config["share_torch"]:
             import torch.multiprocessing
@@ -227,6 +261,20 @@ class Extension(Generic[T]):
             self.ctx = self.mp.get_context("spawn")
         except ValueError as e:
             raise RuntimeError(f"Failed to get 'spawn' context: {e}") from e
+
+        # Determine CUDA IPC eligibility up front (host side)
+        self._cuda_ipc_enabled = False
+        want_ipc = bool(self.config.get("share_cuda_ipc", False))
+        if want_ipc:
+            if not self.config.get("share_torch", False):
+                raise RuntimeError("share_cuda_ipc requires share_torch=True")
+            supported, reason = _probe_cuda_ipc_support()
+            if not supported:
+                raise RuntimeError(f"CUDA IPC requested but unavailable: {reason}")
+            self._cuda_ipc_enabled = True
+            logger.info("[PyIsolate][%s] CUDA IPC enabled (share_cuda_ipc=True)", self.name)
+
+        os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
 
         os.environ["PYISOLATE_CHILD"] = "1"
 
@@ -335,6 +383,7 @@ class Extension(Generic[T]):
                     PYISOLATE_EXTENSION=self.name,
                     PYISOLATE_MODULE_PATH=self.module_path,
                     PYISOLATE_HOST_SNAPSHOT=str(snapshot_file),
+                    PYISOLATE_ENABLE_CUDA_IPC="1" if self._cuda_ipc_enabled else "0",
                 )
             )
             if os.name == "nt":

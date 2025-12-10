@@ -97,6 +97,9 @@ logger = logging.getLogger(__name__)
 # Debug flag for verbose RPC message logging (set via PYISOLATE_DEBUG_RPC=1)
 debug_all_messages = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
 _debug_rpc = debug_all_messages
+_cuda_ipc_env_enabled = os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
+_cuda_ipc_warned = False
+_ipc_metrics = {"send_cuda_ipc": 0, "send_cuda_fallback": 0}
 
 
 def debugprint(*args, **kwargs):
@@ -120,12 +123,15 @@ def get_child_rpc_instance() -> Any:
 
 
 def _tensor_to_cpu(obj: Any) -> Any:
-    """Recursively convert CUDA tensors to CPU and serialize isolation objects.
+    """Recursively prepare objects for RPC transport.
 
-    Converts ModelPatcher proxies to reference dictionaries and downgrades
-    unpicklable custom objects into safe representations for RPC transport.
-    This mirrors the original behavior that avoided cudaMallocAsync IPC issues
-    by normalizing tensors to CPU and by warning on custom container subclasses.
+    CUDA tensors:
+        - If PYISOLATE_ENABLE_CUDA_IPC=1, leave CUDA tensors intact to allow
+          torch.multiprocessing's CUDA IPC reducer to handle zero-copy.
+        - Otherwise, move to CPU (shared memory when possible) for transport.
+
+    Also converts ModelPatcher/ModelSampling objects into reference dictionaries
+    and downgrades unpicklable custom containers into plain serializable forms.
     """
     type_name = type(obj).__name__
 
@@ -166,7 +172,13 @@ def _tensor_to_cpu(obj: Any) -> Any:
     try:
         import torch
         if isinstance(obj, torch.Tensor):
-            return obj.cpu() if obj.is_cuda else obj
+            if obj.is_cuda:
+                if _cuda_ipc_env_enabled:
+                    _ipc_metrics["send_cuda_ipc"] += 1
+                    return obj  # allow CUDA IPC path
+                _ipc_metrics["send_cuda_fallback"] += 1
+                return obj.cpu()
+            return obj
     except ImportError:
         pass
 

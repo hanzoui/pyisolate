@@ -62,3 +62,6 @@ class ExtensionConfig(TypedDict):
 
     share_torch: bool
     """If True, reuse host torch via torch.multiprocessing and zero-copy tensors."""
+
+    share_cuda_ipc: bool
+    """If True, attempt CUDA IPC-based tensor transport (Linux only, requires ``share_torch``)."""
