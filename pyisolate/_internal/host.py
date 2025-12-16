@@ -257,9 +257,11 @@ class Extension(Generic[T]):
     def _exclude_satisfied_requirements(self, requirements: list[str], python_exe: Path) -> list[str]:
         """Filter requirements to skip packages already satisfied in the venv.
 
-        When ``share_torch`` is enabled, the child venv inherits host site-packages,
-        so torch ecosystem packages may already be present. This helper keeps the
-        install list minimal.
+        When ``share_torch`` is enabled, the child venv inherits host site-packages
+        via a .pth file. Torch ecosystem packages MUST be byte-identical between
+        parent and child for shared memory tensor passing to work correctly.
+        Reinstalling could resolve to different versions, breaking the share_torch
+        contract. This is a correctness requirement, not a performance optimization.
         """
         from packaging.requirements import Requirement
 
@@ -358,13 +360,6 @@ class Extension(Generic[T]):
             self.extension_proxy = self.rpc.create_caller(self.extension_type, "extension")
         return self.extension_proxy
 
-    def __getattr__(self, name: str) -> Any:
-        """Delegate attribute access to the extension proxy, ensuring the process is running."""
-        if name in ("_process_initialized", "ensure_process_started", "get_proxy", "name"):
-            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
-        self.ensure_process_started()
-        return getattr(self.get_proxy(), name)
-
     def stop(self) -> None:
         """Stop the extension process and clean up queues/listeners."""
         errors: list[str] = []
@@ -449,26 +444,20 @@ class Extension(Generic[T]):
 
         return proc
 
-    def _ensure_uv(self) -> bool:
-        """Ensure ``uv`` is available; install via pip if missing."""
-        if shutil.which("uv"):
-            return True
-        try:
-            subprocess.check_call(  # noqa: S603  # Trusted: system pip executable
-                [sys.executable, "-m", "pip", "install", "uv"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            return bool(shutil.which("uv"))
-        except Exception:
-            return False
-
     def _create_extension_venv(self) -> None:
-        """Create the virtual environment for this extension if it does not exist."""
+        """Create the virtual environment for this extension using uv."""
         self.venv_path.parent.mkdir(parents=True, exist_ok=True)
 
+        uv_path = shutil.which("uv")
+        if not uv_path:
+            raise RuntimeError(
+                "uv is required but not found. Install it with: pip install uv\n"
+                "See https://github.com/astral-sh/uv for installation options."
+            )
+
         if not self.venv_path.exists():
-            subprocess.check_call([  # noqa: S603  # Trusted: system venv module
-                sys.executable, "-m", "venv", str(self.venv_path)
+            subprocess.check_call([  # noqa: S603  # Trusted: uv venv command
+                uv_path, "venv", str(self.venv_path), "--python", sys.executable
             ])
 
             if self.config["share_torch"]:
@@ -481,6 +470,10 @@ class Extension(Generic[T]):
                 if not child_site.exists():
                     found = list(self.venv_path.glob("**/site-packages"))
                     if found:
+                        logger.warning(
+                            "[PyIsolate] site-packages not at expected path, using glob fallback: %s",
+                            found[0]
+                        )
                         child_site = found[0]
                     else:
                         raise RuntimeError(f"Could not locate site-packages in {self.venv_path}")
@@ -508,10 +501,10 @@ class Extension(Generic[T]):
 
     def _install_dependencies(self) -> None:
         """Install extension dependencies into the venv, skipping already-satisfied ones."""
+        # Windows multiprocessing/Manager uses the interpreter path for spawned
+        # processes. The explicit Scripts/python.exe path is required to avoid
+        # handle issues when multiprocessing.set_executable is involved.
         if os.name == "nt":
-            # Windows multiprocessing/Manager uses the interpreter path for spawned
-            # processes; keep the explicit Scripts/python.exe to avoid handle issues
-            # when set_executable is involved.
             python_exe = self.venv_path / "Scripts" / "python.exe"
         else:
             python_exe = self.venv_path / "bin" / "python"
@@ -519,8 +512,12 @@ class Extension(Generic[T]):
         if not python_exe.exists():
             raise RuntimeError(f"Python executable not found at {python_exe}")
 
-        use_uv = self._ensure_uv()
-        uv_path = shutil.which("uv") if use_uv else None
+        uv_path = shutil.which("uv")
+        if not uv_path:
+            raise RuntimeError(
+                "uv is required but not found. Install it with: pip install uv\n"
+                "See https://github.com/astral-sh/uv for installation options."
+            )
 
         safe_deps: list[str] = []
         for dep in self.config["dependencies"]:
@@ -533,29 +530,11 @@ class Extension(Generic[T]):
         if not safe_deps:
             return
 
-        if use_uv:
-            uv_path_str = uv_path or "uv"
-            cmd_prefix: list[str] = [uv_path_str, "pip", "install", "--python", str(python_exe)]
-            cache_dir = self.venv_path.parent / ".uv_cache"
-            cache_dir.mkdir(exist_ok=True)
-            common_args = ["--cache-dir", str(cache_dir)]
-
-            test_file = cache_dir / ".hardlink_test"
-            test_link = self.venv_path / ".hardlink_test"
-            try:
-                # Prefer hardlinks for uv cache reuse; fall back to copy when the
-                # filesystem/distribution does not support hardlinking.
-                test_file.touch()
-                os.link(test_file, test_link)
-                test_link.unlink()
-                common_args.extend(["--link-mode", "hardlink"])
-            except OSError:
-                common_args.extend(["--link-mode", "copy"])
-            finally:
-                test_file.unlink(missing_ok=True)
-        else:
-            cmd_prefix = [str(python_exe), "-m", "pip", "install"]
-            common_args = []
+        # uv handles hardlink vs copy automatically based on filesystem support
+        cmd_prefix: list[str] = [uv_path, "pip", "install", "--python", str(python_exe)]
+        cache_dir = self.venv_path.parent / ".uv_cache"
+        cache_dir.mkdir(exist_ok=True)
+        common_args: list[str] = ["--cache-dir", str(cache_dir)]
 
         torch_spec: Optional[str] = None
         if not self.config["share_torch"]:
@@ -569,7 +548,7 @@ class Extension(Generic[T]):
                     "--extra-index-url",
                     f"https://download.pytorch.org/whl/cu{cuda_version.replace('.', '')}",
                 ]
-            if ("dev" in torch_version or "+" in torch_version) and use_uv:
+            if "dev" in torch_version or "+" in torch_version:
                 common_args += ["--index-strategy", "unsafe-best-match"]
             torch_spec = f"torch=={torch_version}"
             safe_deps.insert(0, torch_spec)
@@ -605,6 +584,9 @@ class Extension(Generic[T]):
             output_lines: list[str] = []
             for line in proc.stdout:
                 clean = line.rstrip()
+                # Filter out pyisolate install messages to avoid polluting logs
+                # with internal dependency resolution noise that isn't actionable
+                # for users debugging their own extension dependencies.
                 if "pyisolate==" not in clean and "pyisolate @" not in clean:
                     output_lines.append(clean)
             return_code = proc.wait()
