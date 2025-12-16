@@ -40,7 +40,7 @@ python main.py
 ### Option A – run everything for me
 
 ```bash
-cd /home/johnj/pyisolate
+cd /path/to/pyisolate
 ./quickstart.sh
 ```
 
@@ -50,7 +50,7 @@ The script installs `uv`, creates the dev venv, installs pyisolate in editable m
 
 1. **Create the dev environment**
     ```bash
-    cd /home/johnj/pyisolate
+    cd /path/to/pyisolate
     uv venv
     source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
     uv pip install -e ".[dev]"

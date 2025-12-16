@@ -10,7 +10,7 @@ import pytest
 
 # Paths needed for subprocess
 PYISOLATE_ROOT = str(Path(__file__).parent.parent)
-COMFYUI_ROOT = "/home/johnj/ComfyUI"
+COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
 
 SCRIPT = """
 import json, sys

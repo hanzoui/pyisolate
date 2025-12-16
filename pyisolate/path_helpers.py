@@ -11,7 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Any, Iterable, List, Sequence
 
 _DEFAULT_ENV_KEYS = (
     "VIRTUAL_ENV",
@@ -24,7 +24,7 @@ _DEFAULT_ENV_KEYS = (
 def serialize_host_snapshot(
     output_path: str | os.PathLike[str] | None = None,
     extra_env_keys: Iterable[str] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Capture the host interpreter context for use by child processes.
 
     Persisting the snapshot is optional; when provided, ``output_path`` will contain
@@ -36,7 +36,7 @@ def serialize_host_snapshot(
 
     env = {key: os.environ[key] for key in env_keys if key in os.environ}
 
-    snapshot = {
+    snapshot: dict[str, Any] = {
         "sys_path": list(sys.path),
         "sys_executable": sys.executable,
         "sys_prefix": sys.prefix,

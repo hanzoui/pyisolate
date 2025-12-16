@@ -37,6 +37,8 @@ dev = [
     "pre-commit>=3.0",
     "ruff>=0.11.0",
     "pyyaml>=5.4.0",  # Only for test manifest creation
+    "types-torch>=2.0.0",  # Type stubs for torch
+    "importlib-metadata>=4.0.0",  # For type checking
 ]
 test = [
     "numpy>=1.26.0,<2.0.0",  # For testing share_torch functionality
@@ -114,6 +116,9 @@ minversion = "6.0"
 addopts = "-ra -q --cov=pyisolate --cov-report=html --cov-report=term-missing"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:The pynvml package is deprecated:FutureWarning",
+]
 
 [tool.coverage.run]
 source = ["pyisolate"]

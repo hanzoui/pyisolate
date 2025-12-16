@@ -7,18 +7,28 @@ import shutil
 import site
 import subprocess
 import sys
-import tempfile
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from importlib import metadata as importlib_metadata
 from logging.handlers import QueueListener
 from pathlib import Path
-from typing import Generic, Optional, TypeVar
+from typing import Any, Generic, Optional, TypeVar
 
-from ..config import ExtensionConfig, get_torch_ecosystem_packages
+from ..config import ExtensionConfig
 from ..path_helpers import serialize_host_snapshot
 from ..shared import ExtensionBase
 from .client import entrypoint
+from .loader import load_adapter
 from .shared import AsyncRPC
+from .torch_utils import get_torch_ecosystem_packages
+
+__all__ = [
+    "Extension",
+    "ExtensionBase",
+    "build_extension_snapshot",
+    "normalize_extension_name",
+    "validate_dependency",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +52,7 @@ def _probe_cuda_ipc_support() -> tuple[bool, str]:
     try:
         # Minimal handle check: event with interprocess support + tiny tensor
         torch.cuda.current_device()
-        _ = torch.cuda.Event(interprocess=True)
+        _ = torch.cuda.Event(interprocess=True)  # type: ignore[no-untyped-call]
         _ = torch.empty(1, device="cuda")
         return True, "ok"
     except Exception as exc:  # pragma: no cover - defensive
@@ -53,27 +63,26 @@ _UNSAFE_CHARS = frozenset(' \t\n\r;|&$`()<>"\'\\!{}[]*?~#%=,:')
 
 
 class _DeduplicationFilter(logging.Filter):
-    def __init__(self, timeout_seconds=10):
+    def __init__(self, timeout_seconds: int = 10):
         super().__init__()
         self.timeout = timeout_seconds
-        self.last_seen = {}
+        self.last_seen: dict[str, float] = {}
 
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         import time
         msg_content = record.getMessage()
-        msg_hash = hashlib.md5(msg_content.encode('utf-8')).hexdigest()
+        msg_hash = hashlib.sha256(msg_content.encode('utf-8')).hexdigest()
         now = time.time()
-        
-        if msg_hash in self.last_seen:
-            if now - self.last_seen[msg_hash] < self.timeout:
-                return False  # Suppress duplicate
-        
+
+        if msg_hash in self.last_seen and now - self.last_seen[msg_hash] < self.timeout:
+            return False  # Suppress duplicate
+
         self.last_seen[msg_hash] = now
-        
+
         if len(self.last_seen) > 1000:
             cutoff = now - self.timeout
             self.last_seen = {k: v for k, v in self.last_seen.items() if v > cutoff}
-        
+
         return True
 
 
@@ -85,6 +94,34 @@ def _detect_pyisolate_version() -> str:
 
 
 pyisolate_version = _detect_pyisolate_version()
+
+
+def build_extension_snapshot(module_path: str) -> dict[str, object]:
+    """Construct snapshot payload with adapter metadata for child bootstrap."""
+    snapshot: dict[str, object] = serialize_host_snapshot()
+
+    adapter = None
+    path_config: dict[str, object] = {}
+    try:
+        adapter = load_adapter()
+    except Exception as exc:
+        logger.warning("Adapter load failed: %s", exc)
+
+    if adapter:
+        try:
+            path_config = adapter.get_path_config(module_path) or {}
+        except Exception as exc:
+            logger.warning("Adapter path config failed: %s", exc)
+
+    snapshot.update(
+        {
+            "adapter_name": adapter.identifier if adapter else None,
+            "preferred_root": path_config.get("preferred_root"),
+            "additional_paths": path_config.get("additional_paths", []),
+            "context_data": {"module_path": module_path},
+        }
+    )
+    return snapshot
 
 
 def normalize_extension_name(name: str) -> str:
@@ -120,6 +157,8 @@ def validate_dependency(dep: str) -> None:
     """Validate a single dependency specification."""
     if not dep:
         return
+    # Allow `-e` flag for editable installs (e.g., `-e /path/to/package` or `-e .`)
+    # This enables development workflows where the extension is pip-installed in editable mode
     if dep == "-e":
         return
     if dep.startswith("-") and not dep.startswith("-e "):
@@ -143,9 +182,9 @@ def validate_path_within_root(path: Path, root: Path) -> None:
 
 
 @contextmanager
-def environment(**env_vars):
+def environment(**env_vars: Any) -> Iterator[None]:
     """Temporarily set environment variables inside a context."""
-    original = {}
+    original: dict[str, Optional[str]] = {}
     for key, value in env_vars.items():
         original[key] = os.environ.get(key)
         os.environ[key] = str(value)
@@ -192,6 +231,7 @@ class Extension(Generic[T]):
         self.extension_type = extension_type
         self._cuda_ipc_enabled = False
 
+        self.mp: Any
         if self.config["share_torch"]:
             import torch.multiprocessing
             self.mp = torch.multiprocessing
@@ -200,9 +240,12 @@ class Extension(Generic[T]):
             self.mp = multiprocessing
 
         self._process_initialized = False
-        self.log_queue = None
-        self.log_listener = None
-        self.manager = None
+        self.log_queue: Optional[Any] = None
+        self.log_listener: Optional[QueueListener] = None
+        self.manager: Optional[Any] = None
+        self.to_extension: Optional[Any] = None
+        self.from_extension: Optional[Any] = None
+        self.extension_proxy: Optional[T] = None
 
     def ensure_process_started(self) -> None:
         """Start the isolated process if it has not been initialized."""
@@ -220,7 +263,7 @@ class Extension(Generic[T]):
         """
         from packaging.requirements import Requirement
 
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603  # Trusted: system pip executable
             [str(python_exe), "-m", "pip", "list", "--format", "json"],
             capture_output=True, text=True, check=True
         )
@@ -233,7 +276,7 @@ class Extension(Generic[T]):
             if req_str_stripped.startswith('-e ') or req_str_stripped == '-e':
                 filtered.append(req_str)
                 continue
-            if req_str_stripped.startswith('/') or req_str_stripped.startswith('./'):
+            if req_str_stripped.startswith(('/', './')):
                 filtered.append(req_str)
                 continue
 
@@ -241,6 +284,8 @@ class Extension(Generic[T]):
                 req = Requirement(req_str)
                 pkg_name_lower = req.name.lower()
 
+                # Torch ecosystem packages are inherited when share_torch=True; skip
+                # reinstalling them to avoid conflicts and unnecessary downloads.
                 if self.config["share_torch"] and pkg_name_lower in torch_ecosystem:
                     continue
 
@@ -291,16 +336,16 @@ class Extension(Generic[T]):
             self.log_queue = self.ctx.Queue()
 
         self.extension_proxy = None
-        
+
         # Create handler with deduplication filter (industry standard)
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.addFilter(_DeduplicationFilter(timeout_seconds=5))
-        
+
         self.log_listener = QueueListener(self.log_queue, stream_handler)
         self.log_listener.start()
 
         self.proc = self.__launch()
-        self.rpc = AsyncRPC(recv_queue=self.from_extension, send_queue=self.to_extension)
+        self.rpc = AsyncRPC(recv_queue=self.from_extension, send_queue=self.to_extension)  # type: ignore[arg-type]
 
         for api in self.config["apis"]:
             api()._register(self.rpc)
@@ -313,7 +358,7 @@ class Extension(Generic[T]):
             self.extension_proxy = self.rpc.create_caller(self.extension_type, "extension")
         return self.extension_proxy
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the extension proxy, ensuring the process is running."""
         if name in ("_process_initialized", "ensure_process_started", "get_proxy", "name"):
             raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
@@ -362,7 +407,7 @@ class Extension(Generic[T]):
         if errors:
             raise RuntimeError(f"Errors stopping {self.name}: {'; '.join(errors)}")
 
-    def __launch(self):
+    def __launch(self) -> Any:
         """Launch the extension in a separate process after venv + deps are ready."""
         self._create_extension_venv()
         self._install_dependencies()
@@ -372,8 +417,8 @@ class Extension(Generic[T]):
         else:
             executable = str(self.venv_path / "bin" / "python")
 
-        snapshot_file = Path(tempfile.gettempdir()) / f"pyisolate_snapshot_{self.name}.json"
-        serialize_host_snapshot(output_path=str(snapshot_file))
+        snapshot = build_extension_snapshot(self.module_path)
+        snapshot_json = json.dumps(snapshot)
 
         self.mp.set_executable(executable)
         with ExitStack() as stack:
@@ -382,7 +427,7 @@ class Extension(Generic[T]):
                     PYISOLATE_CHILD="1",
                     PYISOLATE_EXTENSION=self.name,
                     PYISOLATE_MODULE_PATH=self.module_path,
-                    PYISOLATE_HOST_SNAPSHOT=str(snapshot_file),
+                    PYISOLATE_HOST_SNAPSHOT=snapshot_json,
                     PYISOLATE_ENABLE_CUDA_IPC="1" if self._cuda_ipc_enabled else "0",
                 )
             )
@@ -409,7 +454,7 @@ class Extension(Generic[T]):
         if shutil.which("uv"):
             return True
         try:
-            subprocess.check_call(
+            subprocess.check_call(  # noqa: S603  # Trusted: system pip executable
                 [sys.executable, "-m", "pip", "install", "uv"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
@@ -417,12 +462,14 @@ class Extension(Generic[T]):
         except Exception:
             return False
 
-    def _create_extension_venv(self):
+    def _create_extension_venv(self) -> None:
         """Create the virtual environment for this extension if it does not exist."""
         self.venv_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.venv_path.exists():
-            subprocess.check_call([sys.executable, "-m", "venv", str(self.venv_path)])
+            subprocess.check_call([  # noqa: S603  # Trusted: system venv module
+                sys.executable, "-m", "venv", str(self.venv_path)
+            ])
 
             if self.config["share_torch"]:
                 if os.name == "nt":
@@ -442,18 +489,29 @@ class Extension(Generic[T]):
                 host_prefix = sys.prefix
                 valid_parents = [p for p in parent_sites if p.startswith(host_prefix)]
                 if not valid_parents:
-                    valid_parents = [p for p in sys.path if "site-packages" in p and p.startswith(host_prefix)]
+                    valid_parents = [
+                        p for p in sys.path
+                        if "site-packages" in p and p.startswith(host_prefix)
+                    ]
                 if not valid_parents:
-                    raise RuntimeError("Could not determine parent site-packages path")
+                    raise RuntimeError(
+                        "Could not determine parent site-packages path to inherit. "
+                        f"host_prefix={host_prefix}, site_packages={parent_sites}, "
+                        f"valid_parents={valid_parents}, "
+                        f"candidates={[p for p in sys.path if 'site-packages' in p]}"
+                    )
 
                 parent_site = valid_parents[0]
                 pth_content = f"import site; site.addsitedir(r'{parent_site}')\n"
                 pth_file = child_site / "_pyisolate_parent.pth"
                 pth_file.write_text(pth_content)
 
-    def _install_dependencies(self):
+    def _install_dependencies(self) -> None:
         """Install extension dependencies into the venv, skipping already-satisfied ones."""
         if os.name == "nt":
+            # Windows multiprocessing/Manager uses the interpreter path for spawned
+            # processes; keep the explicit Scripts/python.exe to avoid handle issues
+            # when set_executable is involved.
             python_exe = self.venv_path / "Scripts" / "python.exe"
         else:
             python_exe = self.venv_path / "bin" / "python"
@@ -476,7 +534,8 @@ class Extension(Generic[T]):
             return
 
         if use_uv:
-            cmd_prefix = [uv_path, "pip", "install", "--python", str(python_exe)]
+            uv_path_str = uv_path or "uv"
+            cmd_prefix: list[str] = [uv_path_str, "pip", "install", "--python", str(python_exe)]
             cache_dir = self.venv_path.parent / ".uv_cache"
             cache_dir.mkdir(exist_ok=True)
             common_args = ["--cache-dir", str(cache_dir)]
@@ -484,6 +543,8 @@ class Extension(Generic[T]):
             test_file = cache_dir / ".hardlink_test"
             test_link = self.venv_path / ".hardlink_test"
             try:
+                # Prefer hardlinks for uv cache reuse; fall back to copy when the
+                # filesystem/distribution does not support hardlinking.
                 test_file.touch()
                 os.link(test_file, test_link)
                 test_link.unlink()
@@ -499,18 +560,17 @@ class Extension(Generic[T]):
         torch_spec: Optional[str] = None
         if not self.config["share_torch"]:
             import torch
-            torch_version = torch.__version__
+            torch_version: str = str(torch.__version__)
             if torch_version.endswith("+cpu"):
                 torch_version = torch_version[:-4]
-            cuda_version = torch.version.cuda
+            cuda_version = torch.version.cuda  # type: ignore[attr-defined]
             if cuda_version:
                 common_args += [
                     "--extra-index-url",
                     f"https://download.pytorch.org/whl/cu{cuda_version.replace('.', '')}",
                 ]
-            if "dev" in torch_version or "+" in torch_version:
-                if use_uv:
-                    common_args += ["--index-strategy", "unsafe-best-match"]
+            if ("dev" in torch_version or "+" in torch_version) and use_uv:
+                common_args += ["--index-strategy", "unsafe-best-match"]
             torch_spec = f"torch=={torch_version}"
             safe_deps.insert(0, torch_spec)
 
@@ -527,14 +587,20 @@ class Extension(Generic[T]):
         if lock_path.exists():
             try:
                 cached = json.loads(lock_path.read_text(encoding="utf-8"))
-                if cached.get("fingerprint") == fingerprint:
+                if cached.get("fingerprint") == fingerprint and cached.get("descriptor") == descriptor:
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Dependency cache read failed: %s", exc)
 
         cmd = cmd_prefix + safe_deps + common_args
 
-        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
+        with subprocess.Popen(  # noqa: S603  # Trusted: validated pip/uv install cmd
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        ) as proc:
             assert proc.stdout is not None
             output_lines: list[str] = []
             for line in proc.stdout:
@@ -552,6 +618,6 @@ class Extension(Generic[T]):
             encoding="utf-8",
         )
 
-    def join(self):
+    def join(self) -> None:
         """Join the child process, blocking until it exits."""
         self.proc.join()

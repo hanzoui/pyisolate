@@ -99,20 +99,20 @@ class TestBuildChildSysPath:
         """If comfy_root provided and not in host_paths, prepend it."""
         host = ["/host/lib1", "/host/lib2"]
         extras = ["/venv/lib"]
-        comfy_root = "/home/johnj/ComfyUI"
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
         
-        result = build_child_sys_path(host, extras, comfy_root=comfy_root)
+        result = build_child_sys_path(host, extras, comfy_root)
         
         assert result[0] == comfy_root
         assert result[1:3] == host
     
     def test_does_not_duplicate_comfy_root_if_present(self):
         """If comfy_root already in host_paths, don't duplicate it."""
-        comfy_root = "/home/johnj/ComfyUI"
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
         host = [comfy_root, "/host/lib1"]
         extras = ["/venv/lib"]
         
-        result = build_child_sys_path(host, extras, comfy_root=comfy_root)
+        result = build_child_sys_path(host, extras, comfy_root)
         
         # Should only appear once
         assert result.count(comfy_root) == 1
@@ -120,11 +120,11 @@ class TestBuildChildSysPath:
     
     def test_removes_comfy_subdirectories_when_root_specified(self):
         """Subdirectories of comfy_root should be filtered to avoid shadowing."""
-        comfy_root = "/home/johnj/ComfyUI"
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
         host = [f"{comfy_root}/comfy", f"{comfy_root}/app", "/host/lib"]
         extras = ["/venv/lib"]
         
-        result = build_child_sys_path(host, extras, comfy_root=comfy_root)
+        result = build_child_sys_path(host, extras, comfy_root)
         
         # ComfyUI root should be first
         assert result[0] == comfy_root
@@ -136,12 +136,12 @@ class TestBuildChildSysPath:
     
     def test_preserves_venv_site_packages_under_comfy_root(self):
         """ComfyUI .venv site-packages should NOT be filtered out."""
-        comfy_root = "/home/johnj/ComfyUI"
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
         venv_site = f"{comfy_root}/.venv/lib/python3.12/site-packages"
         host = [f"{comfy_root}/comfy", venv_site, "/host/lib"]
         extras = []
         
-        result = build_child_sys_path(host, extras, comfy_root=comfy_root)
+        result = build_child_sys_path(host, extras, comfy_root)
         
         # ComfyUI root should be first
         assert result[0] == comfy_root
@@ -233,10 +233,11 @@ class TestIntegration:
             child_path = build_child_sys_path(
                 snapshot["sys_path"],
                 extras,
-                comfy_root="/home/johnj/ComfyUI"
+                preferred_root=os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
             )
             
-            # Verify structure
-            assert "/home/johnj/ComfyUI" in child_path
+            # Verify structure - check that preferred_root is present
+            preferred = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
+            assert preferred in child_path
             assert str(fake_venv) in child_path
-            assert len(child_path) >= len(snapshot["sys_path"])
+            # Note: child_path may be shorter than snapshot["sys_path"] due to filtering of code subdirs

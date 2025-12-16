@@ -5,11 +5,13 @@ for extensions loaded into separate processes.
 """
 
 import logging
-from typing import Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 from ._internal.host import Extension
 from .config import ExtensionConfig, ExtensionManagerConfig
 from .shared import ExtensionBase, ExtensionLocal
+
+__all__ = ["ExtensionManager", "ExtensionBase", "ExtensionConfig", "ExtensionManagerConfig"]
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ class ExtensionManager(Generic[T]):
             config: Manager configuration (e.g., root path for virtualenvs).
         """
         self.config = config
-        self.extensions: dict[str, Extension] = {}
+        self.extensions: dict[str, Extension[T]] = {}
         self.extension_type = extension_type
 
     def load_extension(self, config: ExtensionConfig) -> T:
@@ -40,7 +42,7 @@ class ExtensionManager(Generic[T]):
         if name in self.extensions:
             raise ValueError(f"Extension '{name}' is already loaded")
 
-        extension = Extension(
+        extension: Extension[T] = Extension(
             module_path=config["module_path"],
             extension_type=self.extension_type,
             config=config,
@@ -50,13 +52,13 @@ class ExtensionManager(Generic[T]):
         self.extensions[name] = extension
 
         class HostExtension(ExtensionLocal):
-            def __init__(self, extension_instance) -> None:
+            def __init__(self, extension_instance: Extension[T]) -> None:
                 super().__init__()
                 self._extension = extension_instance
-                self._proxy = None
+                self._proxy: Any = None
 
             @property
-            def proxy(self):
+            def proxy(self) -> Any:
                 if self._proxy is None:
                     if hasattr(self._extension, "ensure_process_started"):
                         self._extension.ensure_process_started()
@@ -64,9 +66,18 @@ class ExtensionManager(Generic[T]):
                     self._initialize_rpc(self._extension.rpc)
                 return self._proxy
 
-            def __getattr__(self, item: str):
+            def __getattr__(self, item: str) -> Any:
                 if hasattr(self._extension, item):
                     return getattr(self._extension, item)
                 return getattr(self.proxy, item)
 
         return cast(T, HostExtension(extension))
+
+    def stop_all_extensions(self) -> None:
+        """Stop all managed extensions and clean up resources."""
+        for name, extension in self.extensions.items():
+            try:
+                extension.stop()
+            except Exception as e:
+                logger.error(f"Error stopping extension '{name}': {e}")
+        self.extensions.clear()

@@ -31,7 +31,7 @@ except ImportError:
     TORCH_AVAILABLE = False
     CUDA_AVAILABLE = False
 
-from .test_integration import IntegrationTestBase
+from .integration.test_integration import IntegrationTestBase
 
 
 class BenchmarkResults:
@@ -188,13 +188,14 @@ class BenchmarkRunner:
 
 
 @pytest.mark.asyncio
-class TestRPCBenchmarks(IntegrationTestBase):
+class TestRPCBenchmarks:
     """Benchmark tests for RPC call overhead."""
 
     @pytest.fixture(autouse=True)
     async def setup_benchmark_environment(self):
         """Set up the benchmark environment once for all tests."""
-        await self.setup_test_environment("benchmark")
+        self.test_base = IntegrationTestBase()
+        await self.test_base.setup_test_environment("benchmark")
 
         # Create benchmark extension with all required dependencies
         benchmark_extension_code = '''
@@ -305,7 +306,7 @@ def example_entrypoint():
     return BenchmarkExtension()
 '''
 
-        self.create_extension(
+        self.test_base.create_extension(
             "benchmark_ext",
             benchmark_extension_code,
             dependencies=["numpy>=1.26.0", "torch>=2.0.0"] if TORCH_AVAILABLE else ["numpy>=1.26.0"],
@@ -318,7 +319,7 @@ def example_entrypoint():
         if TORCH_AVAILABLE:
             extensions_config.append({"name": "benchmark_ext_shared", "share_torch": True})
 
-        self.extensions = await self.load_extensions(extensions_config[:1])  # Load one for now
+        self.extensions = await self.test_base.load_extensions(extensions_config[:1])  # Load one for now
         self.benchmark_ext = self.extensions[0]
 
         # Initialize benchmark runner
@@ -327,7 +328,7 @@ def example_entrypoint():
         yield
 
         # Cleanup
-        await self.cleanup()
+        await self.test_base.cleanup()
 
     async def test_small_data_benchmarks(self):
         """Benchmark small data argument/return value overhead."""

@@ -19,7 +19,7 @@ import pyisolate
 from pyisolate import ExtensionConfig, ExtensionManager, ExtensionManagerConfig
 
 # Import shared components from example
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "example"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "example"))
 from shared import DatabaseSingleton, ExampleExtensionBase
 
 # Check torch availability

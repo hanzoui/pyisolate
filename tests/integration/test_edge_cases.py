@@ -15,7 +15,7 @@ import yaml
 # Import pyisolate components
 
 # Import shared components from example
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "example"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "example"))
 from shared import DatabaseSingleton
 
 # Import test base - handle both module and direct execution
@@ -65,7 +65,9 @@ def example_entrypoint():
 
             # Attempt to load extension should fail
             with pytest.raises(Exception):  # noqa: B017 - Need generic exception for multiple failure modes
-                await test_base.load_extensions([{"name": "bad_deps_ext"}])
+                extensions = await test_base.load_extensions([{"name": "bad_deps_ext"}])
+                # Force initialization to trigger dependency install
+                await extensions[0].initialize()
 
         finally:
             await test_base.cleanup()

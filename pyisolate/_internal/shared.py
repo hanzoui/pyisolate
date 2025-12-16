@@ -1,3 +1,52 @@
+"""
+RPC Serialization Layer - Architecture Overview
+
+This module implements a three-layer serialization system for cross-process RPC communication.
+
+LAYER 1: Low-Level Tensor Preparation (_prepare_for_rpc, formerly _tensor_to_cpu)
+---------------------------------------------------------------------------------------------
+Handles tensor-specific concerns:
+- Detaches tensors from computation graph (prevents autograd leakage across processes)
+- Moves tensors to shared memory (CPU) or enables CUDA IPC (GPU) for zero-copy transfer
+- Preserves tensor metadata (shape, dtype, device info)
+- IMPORTANT: Name is intentionally generic because behavior depends on CUDA IPC availability:
+  * With CUDA IPC (Linux): GPU tensors stay on device via shared memory handles
+  * Without CUDA IPC (Windows/macOS): Tensors copied to CPU shared memory
+  
+Called by: Layer 2 (serialize_for_isolation)
+Operates on: Individual torch.Tensor objects
+
+LAYER 2: High-Level Object Serialization (serialize_for_isolation)
+-------------------------------------------------------------------
+Handles composite data structures:
+- Recursively traverses dicts, lists, tuples to find serializable objects
+- Dispatches tensor objects to Layer 1 for hardware-specific handling
+- Handles custom ComfyUI types (CLIP, VAE, ModelPatcher) via proxies/registries
+- Preserves object relationships and nesting structure
+- Special-cases opaque objects (represent as type name + truncated repr)
+
+Called by: Layer 3 (RPC message sender before transmitting over pipe)
+Operates on: Arbitrary Python objects (function arguments, return values)
+
+LAYER 3: RPC Message Envelope (AsyncRPC.send_request / send_response)
+----------------------------------------------------------------------
+Handles protocol concerns:
+- Wraps serialized data in request/response envelopes with message IDs
+- Manages request correlation (matching responses to requests)
+- Implements timeout handling and error propagation
+- Routes messages through send/recv threads to avoid blocking event loop
+
+WHY THREE LAYERS:
+- Separation of concerns (tensor handling vs structure traversal vs protocol)
+- Testability (each layer tested independently with mock data)
+- Extensibility (add new tensor types in L1, new structures in L2, new transports in L3)
+
+CONSOLIDATION TRADE-OFF:
+Merging layers would couple hardware specifics (CUDA IPC) to structure logic (recursion),
+making it harder to support new hardware (e.g., ROCm, MPS) or transport mechanisms (e.g., 
+shared memory instead of pipes). Current design prioritizes maintainability over brevity.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,10 +57,12 @@ import os
 import queue
 import threading
 import uuid
-from .model_serialization import serialize_for_isolation
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
+    ContextManager,
+    Iterable,
     Literal,
     TypedDict,
     TypeVar,
@@ -20,15 +71,23 @@ from typing import (
     get_type_hints,
 )
 
+T = TypeVar("T")
 
-class AttrDict(dict):
-    def __getattr__(self, item):
+from .model_serialization import serialize_for_isolation
+if TYPE_CHECKING:
+    ModelPatcherRegistry = Any
+    ModelSamplingRegistry = Any
+    ModelSamplingProxy = Any
+
+
+class AttrDict(dict[str, Any]):
+    def __getattr__(self, item: str) -> Any:
         try:
             return self[item]
         except KeyError as e:
             raise AttributeError(item) from e
 
-    def copy(self):
+    def copy(self) -> "AttrDict":
         return AttrDict(super().copy())
 
 
@@ -38,10 +97,10 @@ class AttributeContainer:
     Prevents downstream code from downgrading to plain dict via dict(obj) / {**obj}.
     """
 
-    def __init__(self, data: dict):
-        self._data = data
+    def __init__(self, data: dict[str, Any]):
+        self._data: dict[str, Any] = data
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         if "_data" not in self.__dict__:
             raise AttributeError(name)
         try:
@@ -49,40 +108,40 @@ class AttributeContainer:
         except KeyError as e:
             raise AttributeError(name) from e
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Any:
         return self._data[key]
 
-    def copy(self):
+    def copy(self) -> "AttributeContainer":
         return AttributeContainer(self._data.copy())
 
-    def get(self, key, default=None):
+    def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
-    def keys(self):
+    def keys(self) -> Iterable[str]:
         return self._data.keys()
 
-    def items(self):
+    def items(self) -> Iterable[tuple[str, Any]]:
         return self._data.items()
 
-    def values(self):
+    def values(self) -> Iterable[Any]:
         return self._data.values()
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable[str]:
         return iter(self._data)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._data)
 
-    def __contains__(self, key):
+    def __contains__(self, key: object) -> bool:
         return key in self._data
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"AttributeContainer({getattr(self, '_data', '<empty>')})"
 
-    def __getstate__(self):
+    def __getstate__(self) -> dict[str, Any]:
         return self._data
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: dict[str, Any]) -> None:
         self._data = state
 
 # We only import this to get type hinting working. It can also be a torch.multiprocessing
@@ -99,30 +158,30 @@ debug_all_messages = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
 _debug_rpc = debug_all_messages
 _cuda_ipc_env_enabled = os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
 _cuda_ipc_warned = False
-_ipc_metrics = {"send_cuda_ipc": 0, "send_cuda_fallback": 0}
+_ipc_metrics: dict[str, int] = {"send_cuda_ipc": 0, "send_cuda_fallback": 0}
 
 
-def debugprint(*args, **kwargs):
+def debugprint(*args: Any, **kwargs: Any) -> None:
     if debug_all_messages:
         logger.debug(" ".join(str(arg) for arg in args))
 
 
 # Global RPC instance for child process (set during initialization)
-_child_rpc_instance: Any = None
+_child_rpc_instance: AsyncRPC | None = None
 
 
-def set_child_rpc_instance(rpc: Any) -> None:
+def set_child_rpc_instance(rpc: AsyncRPC | None) -> None:
     """Set the global RPC instance for use inside isolated child processes."""
     global _child_rpc_instance
     _child_rpc_instance = rpc
 
 
-def get_child_rpc_instance() -> Any:
+def get_child_rpc_instance() -> AsyncRPC | None:
     """Return the current child-process RPC instance (if any)."""
     return _child_rpc_instance
 
 
-def _tensor_to_cpu(obj: Any) -> Any:
+def _prepare_for_rpc(obj: Any) -> Any:
     """Recursively prepare objects for RPC transport.
 
     CUDA tensors:
@@ -137,37 +196,43 @@ def _tensor_to_cpu(obj: Any) -> Any:
 
     # Custom serialization hook for ModelPatcher
     if type_name == 'ModelPatcher':
-        try:
-            import os
-            if os.environ.get("PYISOLATE_CHILD") == "1":
-                if hasattr(obj, "_instance_id"):
-                    return {"__type__": "ModelPatcherRef", "model_id": getattr(obj, "_instance_id")}
-                return {"__type__": "ModelPatcherOpaque", "repr": str(obj)[:256]}
-            from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
-            model_id = ModelPatcherRegistry().register(obj)
-            return {"__type__": "ModelPatcherRef", "model_id": model_id}
-        except Exception:
-            return {"__type__": "ModelPatcherOpaque", "repr": str(obj)[:256]}
+        import os
+        if os.environ.get("PYISOLATE_CHILD") == "1":
+            if not hasattr(obj, "_instance_id"):
+                raise RuntimeError(
+                    f"ModelPatcher {id(obj)} encountered in child process without _instance_id. "
+                    f"This indicates the object was not properly proxied or the isolation is broken. "
+                    f"All ModelPatcher objects in child processes must be proxies with _instance_id."
+                )
+            return {"__type__": "ModelPatcherRef", "model_id": getattr(obj, "_instance_id")}
+        
+        from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry  # type: ignore[import-not-found]
+        model_id = ModelPatcherRegistry().register(obj)
+        return {"__type__": "ModelPatcherRef", "model_id": model_id}
 
     if type_name.startswith('ModelSampling'):
-        try:
-            import os
-            if os.environ.get("PYISOLATE_CHILD") == "1":
-                if hasattr(obj, "_instance_id"):
-                    return {"__type__": "ModelSamplingRef", "ms_id": getattr(obj, "_instance_id")}
-                return {"__type__": "ModelSamplingOpaque", "repr": str(obj)[:256]}
-            from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry
-            ms_id = ModelSamplingRegistry().register(obj)
-            return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
-        except Exception:
-            return {"__type__": "ModelSamplingOpaque", "repr": str(obj)[:256]}
+        import os
+        if os.environ.get("PYISOLATE_CHILD") == "1":
+            if not hasattr(obj, "_instance_id"):
+                raise RuntimeError(
+                    f"ModelSampling {id(obj)} encountered in child process without _instance_id. "
+                    f"This indicates the object was not properly proxied or the isolation is broken. "
+                    f"All ModelSampling objects in child processes must be proxies with _instance_id."
+                )
+            return {"__type__": "ModelSamplingRef", "ms_id": getattr(obj, "_instance_id")}
+        
+        from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry  # type: ignore[import-not-found]
+        ms_id = ModelSamplingRegistry().register(obj)
+        return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
 
     # Handle ModelPatcherProxy - convert to ref (child returning proxy to host)
     if type_name == 'ModelPatcherProxy':
-        try:
-            return {"__type__": "ModelPatcherRef", "model_id": obj._instance_id}
-        except Exception:
-            pass
+        if not hasattr(obj, "_instance_id"):
+            raise RuntimeError(
+                f"ModelPatcherProxy {id(obj)} missing _instance_id. "
+                f"This should never happen - all proxies are created with instance IDs."
+            )
+        return {"__type__": "ModelPatcherRef", "model_id": obj._instance_id}
 
     try:
         import torch
@@ -183,46 +248,20 @@ def _tensor_to_cpu(obj: Any) -> Any:
         pass
 
     if isinstance(obj, dict):
-        # Check if this is a dict subclass from a custom module
-        dict_class = type(obj)
-        dict_module = getattr(dict_class, '__module__', '') or ''
-        if dict_class is not dict and dict_module and not dict_module.startswith(
-                ('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing')):
-            # Custom dict subclass - convert to plain dict
-            return {k: _tensor_to_cpu(v) for k, v in obj.items()}
-        return {k: _tensor_to_cpu(v) for k, v in obj.items()}
+        return {k: _prepare_for_rpc(v) for k, v in obj.items()}
 
     if isinstance(obj, (list, tuple)):
-        # Check if this is a list/tuple subclass from a custom module
-        seq_class = type(obj)
-        seq_module = getattr(seq_class, '__module__', '') or ''
-        if seq_class not in (list, tuple) and seq_module and not seq_module.startswith(
-                ('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing')):
-            # Custom sequence subclass - convert to plain list/tuple
-            converted = [_tensor_to_cpu(item) for item in obj]
-            return tuple(converted) if isinstance(obj, tuple) else converted
-        converted = [_tensor_to_cpu(item) for item in obj]
+        converted = [_prepare_for_rpc(item) for item in obj]
         return tuple(converted) if isinstance(obj, tuple) else converted
 
-    # Safety check: primitives pass through, complex objects need pickle validation
+    # Primitives pass through
     if isinstance(obj, (str, int, float, bool, type(None), bytes)):
         return obj
-
-    obj_module = getattr(type(obj), '__module__', '') or ''
-    if obj_module and not obj_module.startswith(
-            ('builtins', 'comfy', 'pyisolate', 'torch', 'numpy', 'typing', 'collections', 'abc')):
-        # This is likely a custom node object - convert to serializable form
-        return {
-            "__pyisolate_unpicklable__": True,
-            "type": type(obj).__name__,
-            "module": obj_module,
-            "repr": str(obj)[:1000],
-        }
 
     return obj
 
 
-def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
+def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
     """Rehydrate ModelPatcher references and containers after an RPC round-trip.
 
     Previously this converted CPU tensors back to CUDA, but image tensors are
@@ -266,15 +305,15 @@ def _tensor_to_cuda(obj: Any, device: Any = None) -> Any:
         converted = {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
         return AttrDict(converted)
     if isinstance(obj, (list, tuple)):
-        converted = [_tensor_to_cuda(item, device) for item in obj]
-        return type(obj)(converted) if isinstance(obj, tuple) else converted
+        converted_seq = [_tensor_to_cuda(item, device) for item in obj]
+        return type(obj)(converted_seq) if isinstance(obj, tuple) else converted_seq
 
     return obj
 
 
-def local_execution(func):
+def local_execution(func: Callable[..., Any]) -> Callable[..., Any]:
     """Mark a ProxiedSingleton method for local execution instead of RPC."""
-    func._is_local_execution = True
+    func._is_local_execution = True  # type: ignore[attr-defined]
     return func
 
 
@@ -282,7 +321,7 @@ class LocalMethodRegistry:
     _instance: LocalMethodRegistry | None = None
     _lock = threading.Lock()
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._local_implementations: dict[type, object] = {}
         self._local_methods: dict[type, set[str]] = {}
 
@@ -295,8 +334,11 @@ class LocalMethodRegistry:
         return cls._instance
 
     def register_class(self, cls: type) -> None:
-        local_instance = object.__new__(cls)
-        cls.__init__(local_instance)
+        # Use object.__new__ to bypass singleton __init__ and prevent infinite recursion.
+        # Standard instantiation would trigger __init__, which registers the singleton,
+        # which would call register_class again, creating an infinite loop.
+        local_instance: Any = object.__new__(cls)
+        cls.__init__(local_instance)  # type: ignore[misc]
         self._local_implementations[cls] = local_instance
 
         local_methods = set()
@@ -313,10 +355,10 @@ class LocalMethodRegistry:
     def is_local_method(self, cls: type, method_name: str) -> bool:
         return cls in self._local_methods and method_name in self._local_methods[cls]
 
-    def get_local_method(self, cls: type, method_name: str):
+    def get_local_method(self, cls: type, method_name: str) -> Callable[..., Any]:
         if cls not in self._local_implementations:
             raise ValueError(f"Class {cls} not registered for local execution")
-        return getattr(self._local_implementations[cls], method_name)
+        return cast(Callable[..., Any], getattr(self._local_implementations[cls], method_name))
 
 
 class RPCRequest(TypedDict):
@@ -325,8 +367,8 @@ class RPCRequest(TypedDict):
     call_id: int
     parent_call_id: int | None
     method: str
-    args: tuple
-    kwargs: dict
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
 
 
 class RPCCallback(TypedDict):
@@ -334,10 +376,15 @@ class RPCCallback(TypedDict):
     callback_id: str
     call_id: int
     parent_call_id: int | None
-    args: tuple
-    kwargs: dict
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
 
 
+# RPC message types define the protocol for bidirectional async communication
+# between host and isolated processes. Each message type serves a specific purpose:
+# - RPCRequest: Host initiates method call on isolated object
+# - RPCCallback: Isolated process calls back to host-registered function
+# - RPCResponse: Returns result (or error) for any pending call
 class RPCResponse(TypedDict):
     kind: Literal["response"]
     call_id: int
@@ -353,15 +400,13 @@ class RPCPendingRequest(TypedDict):
     object_id: str
     parent_call_id: int | None
     calling_loop: asyncio.AbstractEventLoop
-    future: asyncio.Future
+    future: asyncio.Future[Any]
     method: str
-    args: tuple
-    kwargs: dict
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
 
 
 proxied_type = TypeVar("proxied_type", bound=object)
-current_rpc_context: contextvars.ContextVar[AsyncRPC | None] = contextvars.ContextVar(
-    "current_rpc_context", default=None)
 
 
 class AsyncRPC:
@@ -380,8 +425,8 @@ class AsyncRPC:
         self.default_loop = asyncio.get_event_loop()
         self.callees: dict[str, object] = {}
         self.callbacks: dict[str, Any] = {}
-        self.blocking_future: asyncio.Future | None = None
-        self.outbox: queue.Queue[RPCPendingRequest] = queue.Queue()
+        self.blocking_future: asyncio.Future[Any] | None = None
+        self.outbox: queue.Queue[RPCPendingRequest | None] = queue.Queue()
 
     def register_callback(self, func: Any) -> str:
         callback_id = str(uuid.uuid4())
@@ -389,7 +434,7 @@ class AsyncRPC:
             self.callbacks[callback_id] = func
         return callback_id
 
-    async def call_callback(self, callback_id: str, *args, **kwargs):
+    async def call_callback(self, callback_id: str, *args: Any, **kwargs: Any) -> Any:
         loop = asyncio.get_event_loop()
         pending_request = RPCPendingRequest(
             kind="callback",
@@ -401,6 +446,9 @@ class AsyncRPC:
             args=args,
             kwargs=kwargs,
         )
+        # Use outbox pattern to avoid blocking RPC event loop.
+        # Direct queue.put() would block if queue is full, stalling all RPC operations.
+        # Outbox allows async fire-and-forget with separate task handling backpressure.
         self.outbox.put(pending_request)
         return await pending_request["future"]
 
@@ -408,7 +456,7 @@ class AsyncRPC:
         this = self
 
         class CallWrapper:
-            def __getattr__(self, name):
+            def __getattr__(self, name: str) -> Any:
                 attr = getattr(abc, name, None)
                 if not callable(attr) or name.startswith("_"):
                     raise AttributeError(f"{name} is not a valid method")
@@ -420,7 +468,7 @@ class AsyncRPC:
                 if not inspect.iscoroutinefunction(attr):
                     raise ValueError(f"{name} is not a coroutine function")
 
-                async def method(*args, **kwargs):
+                async def method(*args: Any, **kwargs: Any) -> Any:
                     loop = asyncio.get_event_loop()
                     pending_request = RPCPendingRequest(
                         kind="call",
@@ -439,23 +487,29 @@ class AsyncRPC:
 
         return cast(proxied_type, CallWrapper())
 
-    def register_callee(self, object_instance: object, object_id: str):
+    def register_callee(self, object_instance: object, object_id: str) -> None:
         with self.lock:
             if object_id in self.callees:
                 raise ValueError(f"Object ID {object_id} already registered")
             self.callees[object_id] = object_instance
 
-    async def run_until_stopped(self):
+    async def run_until_stopped(self) -> None:
         if self.blocking_future is None:
             self.run()
-        assert self.blocking_future is not None
+        assert self.blocking_future is not None, (
+            "RPC event loop not running: blocking_future is None. "
+            "Ensure run() was called before run_until_stopped()."
+        )
         await self.blocking_future
 
-    async def stop(self):
-        assert self.blocking_future is not None
+    async def stop(self) -> None:
+        assert self.blocking_future is not None, (
+            "Cannot stop RPC: blocking_future is None. "
+            "RPC event loop was never started or already stopped."
+        )
         self.blocking_future.set_result(None)
 
-    def run(self):
+    def run(self) -> None:
         self.blocking_future = self.default_loop.create_future()
         self._threads = [
             threading.Thread(target=self._recv_thread, daemon=True),
@@ -464,8 +518,7 @@ class AsyncRPC:
         for t in self._threads:
             t.start()
 
-    async def dispatch_request(self, request: RPCRequest | RPCCallback):
-        token = current_rpc_context.set(self)
+    async def dispatch_request(self, request: RPCRequest | RPCCallback) -> None:
         try:
             if request["kind"] == "callback":
                 callback = None
@@ -478,7 +531,7 @@ class AsyncRPC:
                     if inspect.iscoroutinefunction(callback)
                     else callback(*request["args"], **request["kwargs"])
                 )
-            else:
+            elif request["kind"] == "call":
                 callee = None
                 with self.lock:
                     callee = self.callees.get(request["object_id"])
@@ -490,16 +543,24 @@ class AsyncRPC:
                     if inspect.iscoroutinefunction(func)
                     else func(*request["args"], **request["kwargs"])
                 )
+            else:
+                # Fail loud on unknown request kinds rather than silently ignoring
+                raise ValueError(
+                    f"Unknown RPC request kind: {request.get('kind')}. "
+                    f"Valid kinds are: 'call', 'callback'. "
+                    f"Request: {request}"
+                )
             response = RPCResponse(kind="response", call_id=request["call_id"], result=result, error=None)
         except Exception as exc:
+            # Explicit error handling for RPC dispatch failures.
+            # Log full exception context (object/callback ID, stack trace) for debugging.
+            # Convert exception to string for serialization across process boundary.
             logger.exception("RPC dispatch failed for %s", request.get("object_id", request.get("callback_id")))
             response = RPCResponse(kind="response", call_id=request["call_id"], result=None, error=str(exc))
-        finally:
-            current_rpc_context.reset(token)
 
-        self.send_queue.put(_tensor_to_cpu(response))
+        self.send_queue.put(_prepare_for_rpc(response))
 
-    def _recv_thread(self):
+    def _recv_thread(self) -> None:
         while True:
             try:
                 item = _tensor_to_cuda(self.recv_queue.get())
@@ -533,7 +594,7 @@ class AsyncRPC:
                     if pending_request:
                         call_on_loop = pending_request["calling_loop"]
 
-                async def call_with_context(captured_request: RPCRequest | RPCCallback):
+                async def call_with_context(captured_request: RPCRequest | RPCCallback) -> None:
                     token = self.handling_call_id.set(captured_request["call_id"])
                     try:
                         return await self.dispatch_request(captured_request)
@@ -542,31 +603,32 @@ class AsyncRPC:
 
                 asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
 
-    def _send_thread(self):
+    def _send_thread(self) -> None:
         id_gen = 0
         while True:
             item = self.outbox.get()
             if item is None:
                 break
+            typed_item: RPCPendingRequest = item
 
-            if item["kind"] == "call":
+            if typed_item["kind"] == "call":
                 call_id = id_gen
                 id_gen += 1
                 with self.lock:
-                    self.pending[call_id] = item
-                serialized_args = serialize_for_isolation(item["args"])
-                serialized_kwargs = serialize_for_isolation(item["kwargs"])
-                request = RPCRequest(
+                    self.pending[call_id] = typed_item
+                serialized_args = serialize_for_isolation(typed_item["args"])
+                serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
+                request_msg: RPCMessage = RPCRequest(
                     kind="call",
-                    object_id=item["object_id"],
+                    object_id=typed_item["object_id"],
                     call_id=call_id,
-                    parent_call_id=item["parent_call_id"],
-                    method=item["method"],
-                    args=_tensor_to_cpu(serialized_args),
-                    kwargs=_tensor_to_cpu(serialized_kwargs),
+                    parent_call_id=typed_item["parent_call_id"],
+                    method=typed_item["method"],
+                    args=_prepare_for_rpc(serialized_args),
+                    kwargs=_prepare_for_rpc(serialized_kwargs),
                 )
                 try:
-                    self.send_queue.put(request)
+                    self.send_queue.put(request_msg)
                 except Exception as exc:
                     with self.lock:
                         pending = self.pending.pop(call_id, None)
@@ -575,23 +637,23 @@ class AsyncRPC:
                             pending["future"].set_exception, RuntimeError(str(exc)))
                     raise
 
-            elif item["kind"] == "callback":
+            elif typed_item["kind"] == "callback":
                 call_id = id_gen
                 id_gen += 1
                 with self.lock:
-                    self.pending[call_id] = item
-                serialized_args = serialize_for_isolation(item["args"])
-                serialized_kwargs = serialize_for_isolation(item["kwargs"])
-                request = RPCCallback(
+                    self.pending[call_id] = typed_item
+                serialized_args = serialize_for_isolation(typed_item["args"])
+                serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
+                request_msg = RPCCallback(
                     kind="callback",
-                    callback_id=item["object_id"],
+                    callback_id=typed_item["object_id"],
                     call_id=call_id,
-                    parent_call_id=item["parent_call_id"],
-                    args=_tensor_to_cpu(serialized_args),
-                    kwargs=_tensor_to_cpu(serialized_kwargs),
+                    parent_call_id=typed_item["parent_call_id"],
+                    args=_prepare_for_rpc(serialized_args),
+                    kwargs=_prepare_for_rpc(serialized_kwargs),
                 )
                 try:
-                    self.send_queue.put(request)
+                    self.send_queue.put(request_msg)
                 except Exception as exc:
                     with self.lock:
                         pending = self.pending.pop(call_id, None)
@@ -600,51 +662,57 @@ class AsyncRPC:
                             pending["future"].set_exception, RuntimeError(str(exc)))
                     raise
 
-            elif item["kind"] == "response":
-                self.send_queue.put(_tensor_to_cpu(item))
+            elif typed_item["kind"] == "response":
+                response_msg: RPCMessage = _prepare_for_rpc(typed_item)
+                self.send_queue.put(response_msg)
 
 
 class SingletonMetaclass(type):
-    T = TypeVar("T", bound="SingletonMetaclass")
-    _instances = {}
+    _instances: dict[type, Any] = {}
 
-    def __call__(cls, *args, **kwargs):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
         if cls not in cls._instances:
             cls._instances[cls] = super().__call__(*args, **kwargs)
         return cls._instances[cls]
 
-    def inject_instance(cls: type[T], instance: T) -> None:
-        assert cls not in SingletonMetaclass._instances
+    def inject_instance(cls: type[T], instance: Any) -> None:
+        assert cls not in SingletonMetaclass._instances, (
+            f"Cannot inject instance for {cls.__name__}: singleton already exists. "
+            f"Instance was likely created before injection attempt. "
+            f"Ensure inject_instance() is called before any instantiation."
+        )
         SingletonMetaclass._instances[cls] = instance
 
-    def get_instance(cls: type[T], *args, **kwargs) -> T:
+    def get_instance(cls: type[T], *args: Any, **kwargs: Any) -> T:
         if cls not in SingletonMetaclass._instances:
-            SingletonMetaclass._instances[cls] = super().__call__(*args, **kwargs)
-        return cls._instances[cls]
+            SingletonMetaclass._instances[cls] = super().__call__(*args, **kwargs)  # type: ignore[misc]
+        return cast(T, SingletonMetaclass._instances[cls])
 
     def use_remote(cls, rpc: AsyncRPC) -> None:
-        assert issubclass(cls, ProxiedSingleton)
+        assert issubclass(cls, ProxiedSingleton), (
+            f"Class {cls.__name__} must inherit from ProxiedSingleton to use remote RPC capabilities."
+        )
         remote = rpc.create_caller(cls, cls.get_remote_id())
         LocalMethodRegistry.get_instance().register_class(cls)
         cls.inject_instance(remote)
 
-        for name, t in get_type_hints(cls).items():
-            if isinstance(t, type) and issubclass(t, ProxiedSingleton) and not name.startswith("_"):
-                caller = rpc.create_caller(t, t.get_remote_id())
+        for name, t_hint in get_type_hints(cls).items():
+            if isinstance(t_hint, type) and issubclass(t_hint, ProxiedSingleton) and not name.startswith("_"):
+                caller = rpc.create_caller(t_hint, t_hint.get_remote_id())
                 setattr(remote, name, caller)
 
 
 class ProxiedSingleton(metaclass=SingletonMetaclass):
     """Cross-process singleton with RPC-proxied method calls."""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self) -> None:
+        object.__init__(self)
 
     @classmethod
     def get_remote_id(cls) -> str:
         return cls.__name__
 
-    def _register(self, rpc: AsyncRPC):
+    def _register(self, rpc: AsyncRPC) -> None:
         rpc.register_callee(self, self.get_remote_id())
         for name, attr in self.__class__.__dict__.items():
             if isinstance(attr, ProxiedSingleton) and not name.startswith("_"):

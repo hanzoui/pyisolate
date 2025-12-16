@@ -1,0 +1,147 @@
+import asyncio
+import queue
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from pyisolate._internal import shared
+from pyisolate._internal.shared import (
+    AsyncRPC,
+    AttrDict,
+    AttributeContainer,
+    LocalMethodRegistry,
+    ProxiedSingleton,
+    SingletonMetaclass,
+    _prepare_for_rpc,
+    _tensor_to_cuda,
+)
+
+
+def test_prepare_for_rpc_model_sampling_child(monkeypatch):
+    monkeypatch.setenv("PYISOLATE_CHILD", "1")
+    with pytest.raises(RuntimeError):
+        _prepare_for_rpc(type("ModelSampling", (), {})())
+
+
+def test_prepare_for_rpc_nested_attr_container(monkeypatch):
+    payload = {
+        "attr": AttributeContainer({"a": 1, "b": AttrDict({"c": 2})}),
+        "list": [AttrDict({"d": 3})],
+    }
+    converted = _prepare_for_rpc(payload)
+    assert isinstance(converted, dict)
+    assert "attr" in converted and "list" in converted
+
+
+def test_tensor_to_cuda_attribute_container():
+    obj = {
+        "__pyisolate_attribute_container__": True,
+        "data": {"x": {"__pyisolate_attrdict__": True, "data": {"z": 5}}},
+    }
+    out = _tensor_to_cuda(obj)
+    assert isinstance(out, AttributeContainer)
+    assert isinstance(out.x, AttrDict)
+    assert out.x.z == 5
+
+
+@pytest.mark.asyncio
+async def test_async_rpc_stop_requires_run():
+    import multiprocessing
+
+    recv_q = multiprocessing.get_context("spawn").Queue()
+    send_q = multiprocessing.get_context("spawn").Queue()
+    rpc = AsyncRPC(recv_queue=recv_q, send_queue=send_q)
+    rpc.run()
+    await rpc.stop()
+    assert rpc.blocking_future.done() is True
+
+
+def test_async_rpc_send_thread_sets_exception_on_send_failure():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    class FailingQueue:
+        def put(self, _):
+            raise RuntimeError("boom")
+
+    recv_q: queue.Queue = queue.Queue()
+    rpc = AsyncRPC(recv_queue=recv_q, send_queue=FailingQueue())
+
+    pending = shared.RPCPendingRequest(  # type: ignore[call-arg]
+        kind="call",
+        object_id="obj",
+        parent_call_id=None,
+        calling_loop=loop,
+        future=loop.create_future(),
+        method="ping",
+        args=(),
+        kwargs={},
+    )
+    rpc.outbox.put(pending)
+    rpc.outbox.put(None)
+
+    with pytest.raises(RuntimeError):
+        rpc._send_thread()
+    loop.run_until_complete(asyncio.sleep(0))
+    assert pending["future"].done() is True
+    with pytest.raises(RuntimeError):
+        pending["future"].result()
+    loop.close()
+
+
+def test_async_rpc_send_thread_callback_failure_sets_exception():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    class FailingQueue:
+        def put(self, _):
+            raise RuntimeError("kaboom")
+
+    recv_q: queue.Queue = queue.Queue()
+    rpc = AsyncRPC(recv_queue=recv_q, send_queue=FailingQueue())
+
+    pending = shared.RPCPendingRequest(  # type: ignore[call-arg]
+        kind="callback",
+        object_id="cb",
+        parent_call_id=None,
+        calling_loop=loop,
+        future=loop.create_future(),
+        method="__call__",
+        args=(),
+        kwargs={},
+    )
+    rpc.outbox.put(pending)
+    rpc.outbox.put(None)
+
+    with pytest.raises(RuntimeError):
+        rpc._send_thread()
+    loop.run_until_complete(asyncio.sleep(0))
+    assert pending["future"].done() is True
+    with pytest.raises(RuntimeError):
+        pending["future"].result()
+    loop.close()
+
+
+def test_singleton_metaclass_inject_guard():
+    class Demo(metaclass=SingletonMetaclass):
+        pass
+
+    Demo.get_instance()
+    with pytest.raises(AssertionError):
+        Demo.inject_instance(object())
+
+
+def test_proxied_singleton_registers_nested(monkeypatch):
+    class Nested(ProxiedSingleton):
+        pass
+
+    class Parent(ProxiedSingleton):
+        child = Nested()
+
+    rpc = SimpleNamespace(register_callee=MagicMock())
+    Parent()._register(rpc)  # instance register should register child but not self twice
+    assert rpc.register_callee.call_count == 2
+
+    LocalMethodRegistry._instance = None
+    SingletonMetaclass._instances.clear()

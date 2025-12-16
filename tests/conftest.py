@@ -7,15 +7,44 @@ Add any shared fixtures or pytest configuration here.
 import logging
 import os
 import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 # Add ComfyUI to sys.path BEFORE any tests run
 # This is required because pyisolate is now ComfyUI-integrated
-COMFYUI_ROOT = "/home/johnj/ComfyUI"
+COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
 if COMFYUI_ROOT not in sys.path:
     sys.path.insert(0, COMFYUI_ROOT)
 
 # Set environment variable so child processes know ComfyUI location
 os.environ.setdefault("COMFYUI_ROOT", COMFYUI_ROOT)
+
+
+@pytest.fixture
+def patch_extension_launch(monkeypatch):
+    """Prevent real subprocess launches during unit tests.
+    
+    NOTE: This fixture is NOT autouse - integration tests should NOT use it.
+    Unit tests that need mocked launch should explicitly request this fixture.
+    """
+    from pyisolate._internal import host as host_internal
+
+    original_launch = host_internal.Extension._Extension__launch
+    host_internal.Extension._orig_launch = original_launch  # type: ignore[attr-defined]
+
+    def dummy_launch(self):
+        return SimpleNamespace(
+            is_alive=lambda: False,
+            terminate=lambda: None,
+            join=lambda timeout=None: None,
+            kill=lambda: None,
+        )
+
+    monkeypatch.setattr(host_internal.Extension, "_Extension__launch", dummy_launch)
+    yield
+    monkeypatch.setattr(host_internal.Extension, "_Extension__launch", original_launch)
 
 
 def pytest_configure(config):

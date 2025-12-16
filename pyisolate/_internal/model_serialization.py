@@ -3,66 +3,30 @@ Custom serialization helpers for PyIsolate.
 
 These helpers let PyIsolate transparently move tensors and registered objects
 across process boundaries. ModelPatcher/CLIP/VAE objects are converted to
-lightweight references while preserving tensor sharing semantics.
+lightweight references while preserving tensor sharing semantics (CUDA tensors
+stay on-device when CUDA IPC is enabled; otherwise they fall back to CPU shared
+memory for transport).
 """
 
 import logging
 import os
-from typing import Any
+import sys
+from typing import Any, TYPE_CHECKING
+
+from .serialization_registry import SerializerRegistry
 
 import torch
 
+_cuda_ipc_enabled = sys.platform == "linux" and os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
+
+if TYPE_CHECKING:  # pragma: no cover - typing aids
+    import comfy.isolation.extension_wrapper  # type: ignore[import-not-found]
+    import comfy.isolation.model_patcher_proxy  # type: ignore[import-not-found]
+    import comfy.isolation.clip_proxy  # type: ignore[import-not-found]
+    import comfy.isolation.vae_proxy  # type: ignore[import-not-found]
+    import comfy.isolation.model_sampling_proxy  # type: ignore[import-not-found]
+
 logger = logging.getLogger(__name__)
-
-
-def prepare_tensors_for_rpc(data: Any) -> Any:
-    """Recursively prepare tensors for RPC.
-
-    If CUDA IPC env is enabled, leave CUDA tensors on device (torch.multiprocessing
-    will use CUDA IPC). Otherwise, move CUDA tensors to CPU shared memory.
-    """
-    cuda_ipc = os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
-
-    if isinstance(data, torch.Tensor):
-        if data.is_cuda:
-            if cuda_ipc:
-                return data
-            cpu_tensor = data.to("cpu", copy=True)
-            cpu_tensor.share_memory_()
-            return cpu_tensor
-        elif not data.is_shared():
-            data.share_memory_()
-        return data
-
-    if isinstance(data, dict):
-        return {k: prepare_tensors_for_rpc(v) for k, v in data.items()}
-
-    if isinstance(data, (list, tuple)):
-        result = [prepare_tensors_for_rpc(item) for item in data]
-        return type(data)(result)
-
-    return data
-
-
-def move_tensors_to_device(data: Any, device: torch.device) -> Any:
-    """Recursively move CPU tensors back to the specified device.
-
-    Used on the host to move RPC arguments from CPU shared memory back to GPU
-    before executing ModelPatcher or other host calls.
-    """
-    if isinstance(data, torch.Tensor):
-        if str(data.device) != str(device):
-            return data.to(device)
-        return data
-
-    if isinstance(data, dict):
-        return {k: move_tensors_to_device(v, device) for k, v in data.items()}
-
-    if isinstance(data, (list, tuple)):
-        result = [move_tensors_to_device(item, device) for item in data]
-        return type(data)(result)
-
-    return data
 
 
 def serialize_for_isolation(data: Any) -> Any:
@@ -90,11 +54,28 @@ def serialize_for_isolation(data: Any) -> Any:
         # with normal serialization.
         pass
 
+    # Adapter-registered serializers take precedence over built-in handlers
+    registry = SerializerRegistry.get_instance()
+    if registry.has_handler(type_name):
+        serializer = registry.get_serializer(type_name)
+        if serializer:
+            return serializer(data)
+
+    if isinstance(data, torch.Tensor):
+        if data.is_cuda:
+            if _cuda_ipc_enabled:
+                return data
+            return data.cpu()
+        return data
+
     if type_name == 'ModelPatcher':
         if os.environ.get("PYISOLATE_CHILD") == "1":
             if hasattr(data, "_instance_id"):
                 return {"__type__": "ModelPatcherRef", "model_id": getattr(data, "_instance_id")}
-            return {"__type__": "ModelPatcherOpaque", "repr": str(data)[:256]}
+            raise RuntimeError(
+                f"ModelPatcher in child process lacks _instance_id: {type(data).__module__}.{type(data).__name__}. "
+                f"Cannot serialize for RPC without valid instance identifier."
+            )
         from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
         model_id = ModelPatcherRegistry().register(data)
         return {"__type__": "ModelPatcherRef", "model_id": model_id}
@@ -103,7 +84,7 @@ def serialize_for_isolation(data: Any) -> Any:
         # Already a proxy, return ref dict
         return {"__type__": "ModelPatcherRef", "model_id": data._instance_id}
 
-    if type_name == 'CLIP' or hasattr(data, 'tokenize'):
+    if type_name == 'CLIP':
         try:
             from comfy.isolation.clip_proxy import CLIPRegistry
             clip_id = CLIPRegistry().register(data)
@@ -131,12 +112,15 @@ def serialize_for_isolation(data: Any) -> Any:
         if os.environ.get("PYISOLATE_CHILD") == "1":
             if hasattr(data, "_instance_id"):
                 return {"__type__": "ModelSamplingRef", "ms_id": getattr(data, "_instance_id")}
-            return {"__type__": "ModelSamplingOpaque", "repr": str(data)[:256]}
+            raise RuntimeError(
+                f"ModelSampling in child process lacks _instance_id: {type(data).__module__}.{type(data).__name__}. "
+                f"Cannot serialize for RPC without valid instance identifier."
+            )
         try:
             import copyreg
             from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry, ModelSamplingProxy
 
-            def _reduce_model_sampling(ms):
+            def _reduce_model_sampling(ms: Any) -> tuple[type[ModelSamplingProxy], tuple[int]]:
                 registry = ModelSamplingRegistry()
                 ms_id_local = registry.register(ms)
                 return (ModelSamplingProxy, (ms_id_local,))
@@ -174,6 +158,8 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
 
     type_name = type(data).__name__
 
+    registry = SerializerRegistry.get_instance()
+
     if isinstance(data, RemoteObjectHandle):
         if _nested or extension is None:
             return data
@@ -195,6 +181,12 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
 
     if isinstance(data, dict):
         ref_type = data.get("__type__")
+
+        # Adapter-registered deserializers for reference dicts
+        if ref_type and registry.has_handler(ref_type):
+            deserializer = registry.get_deserializer(ref_type)
+            if deserializer:
+                return deserializer(data)
 
         if ref_type == "ModelPatcherRef":
             from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
@@ -239,6 +231,13 @@ def deserialize_proxy_result(data: Any) -> Any:
     """
     if isinstance(data, dict):
         ref_type = data.get("__type__")
+
+        # Adapter-registered deserializers for proxy-bound references
+        registry = SerializerRegistry.get_instance()
+        if ref_type and registry.has_handler(ref_type):
+            deserializer = registry.get_deserializer(ref_type)
+            if deserializer:
+                return deserializer(data)
 
         if ref_type == "ModelPatcherRef":
             from comfy.isolation.model_patcher_proxy import ModelPatcherProxy

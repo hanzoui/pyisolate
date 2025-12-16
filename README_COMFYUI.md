@@ -94,22 +94,22 @@ PyIsolate and internal functions that use it use a "][" as log prefix.
 **Expected logs - Reporting:**
 ```
 Import times for custom nodes:
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/websocket_image_save.py
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/comfyui-florence2
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/comfyui-videohelpersuite
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-GGUF
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/comfyui-kjnodes
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-Manager
-   0.1 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-Crystools
-   0.3 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-WanVideoWrapper
-   0.4 seconds: /home/johnj/ComfyUI/custom_nodes/RES4LYF
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/websocket_image_save.py
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/comfyui-florence2
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/comfyui-videohelpersuite
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-GGUF
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/comfyui-kjnodes
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-Manager
+   0.1 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-Crystools
+   0.3 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-WanVideoWrapper
+   0.4 seconds: /path/to/ComfyUI/custom_nodes/RES4LYF
 
 
 Import times for isolated custom nodes:
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-DepthAnythingV2
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-PyIsolatedV3
-   0.0 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-APIsolated
-   3.2 seconds: /home/johnj/ComfyUI/custom_nodes/ComfyUI-IsolationTest     #First-time cost
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-DepthAnythingV2
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-PyIsolatedV3
+   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-APIsolated
+   3.2 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-IsolationTest     #First-time cost
 ```
 
 

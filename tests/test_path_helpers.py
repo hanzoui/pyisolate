@@ -29,15 +29,15 @@ def test_serialize_host_snapshot_includes_expected_keys(tmp_path: Path, monkeypa
 def test_build_child_sys_path_preserves_host_order() -> None:
     host_paths = ["/host/root", "/host/site-packages"]
     extra_paths = ["/node/.venv/lib/python3.12/site-packages"]
-    result = build_child_sys_path(host_paths, extra_paths, comfy_root=None)
+    result = build_child_sys_path(host_paths, extra_paths, preferred_root=None)
     assert result == host_paths + extra_paths
 
 
 def test_build_child_sys_path_inserts_comfy_root_when_missing() -> None:
     host_paths = ["/host/site-packages"]
-    comfy_root = "/home/johnj/ComfyUI"
+    comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
     extra_paths: list[str] = []
-    result = build_child_sys_path(host_paths, extra_paths, comfy_root=comfy_root)
+    result = build_child_sys_path(host_paths, extra_paths, preferred_root=comfy_root)
     assert result[0] == comfy_root
     assert result[1:] == host_paths
 
@@ -52,9 +52,9 @@ def test_build_child_sys_path_deduplicates_entries(tmp_path: Path) -> None:
 
 
 def test_build_child_sys_path_skips_duplicate_comfy_root() -> None:
-    comfy_root = "/home/johnj/ComfyUI"
+    comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
     host_paths = [comfy_root, "/host/other"]
-    result = build_child_sys_path(host_paths, extra_paths=[], comfy_root=comfy_root)
+    result = build_child_sys_path(host_paths, extra_paths=[], preferred_root=comfy_root)
     assert result == host_paths
 
 
@@ -87,7 +87,7 @@ def test_child_import_succeeds_after_path_unification(tmp_path: Path, monkeypatc
     for name in [n for n in list(sys.modules) if n.startswith("app") or n.startswith("utils")]:
         sys.modules.pop(name)
 
-    unified = build_child_sys_path([], [], comfy_root=str(host_root))
+    unified = build_child_sys_path([], [], preferred_root=str(host_root))
     monkeypatch.setattr(sys, "path", unified)
     module = __import__(target_module, fromlist=["VALUE"])
     assert module.VALUE == "hello"
