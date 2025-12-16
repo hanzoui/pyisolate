@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypedDict
 
-from ._internal.torch_utils import get_torch_ecosystem_packages
-
 if TYPE_CHECKING:
     from ._internal.shared import ProxiedSingleton
 

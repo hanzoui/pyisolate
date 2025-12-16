@@ -8,14 +8,14 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Optional, cast
+from typing import cast
 
 from ..interfaces import IsolationAdapter
 
 logger = logging.getLogger(__name__)
 
 
-def load_adapter(name: Optional[str] = None) -> Optional[IsolationAdapter]:
+def load_adapter(name: str | None = None) -> IsolationAdapter | None:
     """Load an isolation adapter by name using entry points.
 
     Discovery order:
@@ -40,7 +40,10 @@ def load_adapter(name: Optional[str] = None) -> Optional[IsolationAdapter]:
         from importlib.metadata import entry_points
 
     eps_obj = entry_points()
-    eps_list = list(eps_obj.select(group="pyisolate.adapters")) if hasattr(eps_obj, "select") else list(eps_obj)
+    if hasattr(eps_obj, "select"):
+        eps_list = list(eps_obj.select(group="pyisolate.adapters"))
+    else:
+        eps_list = list(eps_obj)
 
     if not eps_list:
         if name:

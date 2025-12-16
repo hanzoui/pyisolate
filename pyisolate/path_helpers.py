@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence
+from typing import Any
 
 _DEFAULT_ENV_KEYS = (
     "VIRTUAL_ENV",
@@ -56,7 +57,7 @@ def build_child_sys_path(
     host_paths: Sequence[str],
     extra_paths: Sequence[str],
     preferred_root: str | None = None,
-) -> List[str]:
+) -> list[str]:
     """Construct ``sys.path`` for an isolated child interpreter.
 
     Host paths retain order, an optional preferred root is prepended, and child
@@ -67,7 +68,7 @@ def build_child_sys_path(
     def _norm(path: str) -> str:
         return os.path.normcase(os.path.abspath(path))
 
-    result: List[str] = []
+    result: list[str] = []
     seen: set[str] = set()
 
     ordered_host = list(host_paths)

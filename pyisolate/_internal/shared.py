@@ -12,7 +12,7 @@ Handles tensor-specific concerns:
 - IMPORTANT: Name is intentionally generic because behavior depends on CUDA IPC availability:
   * With CUDA IPC (Linux): GPU tensors stay on device via shared memory handles
   * Without CUDA IPC (Windows/macOS): Tensors copied to CPU shared memory
-  
+
 Called by: Layer 2 (serialize_for_isolation)
 Operates on: Individual torch.Tensor objects
 
@@ -43,7 +43,7 @@ WHY THREE LAYERS:
 
 CONSOLIDATION TRADE-OFF:
 Merging layers would couple hardware specifics (CUDA IPC) to structure logic (recursion),
-making it harder to support new hardware (e.g., ROCm, MPS) or transport mechanisms (e.g., 
+making it harder to support new hardware (e.g., ROCm, MPS) or transport mechanisms (e.g.,
 shared memory instead of pipes). Current design prioritizes maintainability over brevity.
 """
 
@@ -57,12 +57,11 @@ import os
 import queue
 import threading
 import uuid
+from collections.abc import Iterable
 from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    ContextManager,
-    Iterable,
     Literal,
     TypedDict,
     TypeVar,
@@ -71,9 +70,10 @@ from typing import (
     get_type_hints,
 )
 
+from .model_serialization import serialize_for_isolation
+
 T = TypeVar("T")
 
-from .model_serialization import serialize_for_isolation
 if TYPE_CHECKING:
     ModelPatcherRegistry = Any
     ModelSamplingRegistry = Any
@@ -87,7 +87,7 @@ class AttrDict(dict[str, Any]):
         except KeyError as e:
             raise AttributeError(item) from e
 
-    def copy(self) -> "AttrDict":
+    def copy(self) -> AttrDict:
         return AttrDict(super().copy())
 
 
@@ -111,7 +111,7 @@ class AttributeContainer:
     def __getitem__(self, key: str) -> Any:
         return self._data[key]
 
-    def copy(self) -> "AttributeContainer":
+    def copy(self) -> AttributeContainer:
         return AttributeContainer(self._data.copy())
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -204,8 +204,8 @@ def _prepare_for_rpc(obj: Any) -> Any:
                     f"This indicates the object was not properly proxied or the isolation is broken. "
                     f"All ModelPatcher objects in child processes must be proxies with _instance_id."
                 )
-            return {"__type__": "ModelPatcherRef", "model_id": getattr(obj, "_instance_id")}
-        
+            return {"__type__": "ModelPatcherRef", "model_id": obj._instance_id}
+
         from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry  # type: ignore[import-not-found]
         model_id = ModelPatcherRegistry().register(obj)
         return {"__type__": "ModelPatcherRef", "model_id": model_id}
@@ -219,9 +219,11 @@ def _prepare_for_rpc(obj: Any) -> Any:
                     f"This indicates the object was not properly proxied or the isolation is broken. "
                     f"All ModelSampling objects in child processes must be proxies with _instance_id."
                 )
-            return {"__type__": "ModelSamplingRef", "ms_id": getattr(obj, "_instance_id")}
-        
-        from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry  # type: ignore[import-not-found]
+            return {"__type__": "ModelSamplingRef", "ms_id": obj._instance_id}
+
+        from comfy.isolation.model_sampling_proxy import (
+            ModelSamplingRegistry,  # type: ignore[import-not-found]
+        )
         ms_id = ModelSamplingRegistry().register(obj)
         return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
 
@@ -552,11 +554,12 @@ class AsyncRPC:
                 )
             response = RPCResponse(kind="response", call_id=request["call_id"], result=result, error=None)
         except Exception as exc:
-            # Explicit error handling for RPC dispatch failures.
-            # Log full exception context (object/callback ID, stack trace) for debugging.
-            # Convert exception to string for serialization across process boundary.
-            logger.exception("RPC dispatch failed for %s", request.get("object_id", request.get("callback_id")))
-            response = RPCResponse(kind="response", call_id=request["call_id"], result=None, error=str(exc))
+            # Log full exception context for debugging; convert to string for serialization.
+            obj_id = request.get("object_id", request.get("callback_id"))
+            logger.exception("RPC dispatch failed for %s", obj_id)
+            response = RPCResponse(
+                kind="response", call_id=request["call_id"], result=None, error=str(exc)
+            )
 
         self.send_queue.put(_prepare_for_rpc(response))
 

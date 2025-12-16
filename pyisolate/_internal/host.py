@@ -468,15 +468,10 @@ class Extension(Generic[T]):
                     child_site = self.venv_path / "lib" / f"python{vi.major}.{vi.minor}" / "site-packages"
 
                 if not child_site.exists():
-                    found = list(self.venv_path.glob("**/site-packages"))
-                    if found:
-                        logger.warning(
-                            "[PyIsolate] site-packages not at expected path, using glob fallback: %s",
-                            found[0]
-                        )
-                        child_site = found[0]
-                    else:
-                        raise RuntimeError(f"Could not locate site-packages in {self.venv_path}")
+                    raise RuntimeError(
+                        f"site-packages not found at expected path: {child_site}. "
+                        f"venv may be malformed."
+                    )
 
                 parent_sites = site.getsitepackages()
                 host_prefix = sys.prefix

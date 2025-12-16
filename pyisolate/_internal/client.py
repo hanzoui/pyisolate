@@ -16,9 +16,10 @@ import importlib.util
 import logging
 import os
 import sys
+from contextlib import AbstractContextManager as ContextManager
 from contextlib import nullcontext
 from logging.handlers import QueueHandler
-from typing import Any, ContextManager, Optional, cast
+from typing import Any, Optional, cast
 
 from ..config import ExtensionConfig
 from ..interfaces import IsolationAdapter

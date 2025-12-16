@@ -7,7 +7,7 @@ be implemented without inheriting from concrete base classes.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from ._internal.shared import AsyncRPC, ProxiedSingleton
 
@@ -20,14 +20,14 @@ class SerializerRegistryProtocol(Protocol):
         self,
         type_name: str,
         serializer: Callable[[Any], Any],
-        deserializer: Optional[Callable[[Any], Any]] = None,
+        deserializer: Callable[[Any], Any] | None = None,
     ) -> None:
         """Register serializer/deserializer pair for a type."""
 
-    def get_serializer(self, type_name: str) -> Optional[Callable[[Any], Any]]:
+    def get_serializer(self, type_name: str) -> Callable[[Any], Any] | None:
         """Return serializer for type if registered."""
 
-    def get_deserializer(self, type_name: str) -> Optional[Callable[[Any], Any]]:
+    def get_deserializer(self, type_name: str) -> Callable[[Any], Any] | None:
         """Return deserializer for type if registered."""
 
     def has_handler(self, type_name: str) -> bool:
@@ -42,7 +42,7 @@ class IsolationAdapter(Protocol):
     def identifier(self) -> str:
         """Unique adapter identifier (e.g., "comfyui")."""
 
-    def get_path_config(self, module_path: str) -> Optional[Dict[str, Any]]:
+    def get_path_config(self, module_path: str) -> dict[str, Any] | None:
         """Compute path configuration from extension module path.
 
         Returns a dict with keys such as:
@@ -50,13 +50,13 @@ class IsolationAdapter(Protocol):
         - ``additional_paths``: extra sys.path entries to prepend
         """
 
-    def setup_child_environment(self, snapshot: Dict[str, Any]) -> None:
+    def setup_child_environment(self, snapshot: dict[str, Any]) -> None:
         """Configure child process environment after sys.path reconstruction."""
 
     def register_serializers(self, registry: SerializerRegistryProtocol) -> None:
         """Register custom type serializers for RPC transport."""
 
-    def provide_rpc_services(self) -> List[type[ProxiedSingleton]]:
+    def provide_rpc_services(self) -> list[type[ProxiedSingleton]]:
         """Return ProxiedSingleton classes to expose via RPC."""
 
     def handle_api_registration(self, api: ProxiedSingleton, rpc: AsyncRPC) -> None:

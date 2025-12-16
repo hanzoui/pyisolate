@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ..interfaces import IsolationAdapter
 from ..path_helpers import build_child_sys_path
@@ -21,11 +21,11 @@ from .serialization_registry import SerializerRegistry
 logger = logging.getLogger(__name__)
 
 
-def _apply_sys_path(snapshot: Dict[str, Any]) -> None:
+def _apply_sys_path(snapshot: dict[str, Any]) -> None:
     host_paths = snapshot.get("sys_path", [])
     extra_paths = snapshot.get("additional_paths", [])
 
-    preferred_root: Optional[str] = snapshot.get("preferred_root")
+    preferred_root: str | None = snapshot.get("preferred_root")
     if not preferred_root:
         context_data = snapshot.get("context_data", {})
         module_path = context_data.get("module_path") or os.environ.get("PYISOLATE_MODULE_PATH")
@@ -59,7 +59,7 @@ def _apply_sys_path(snapshot: Dict[str, Any]) -> None:
     logger.debug("Applied %d paths from snapshot (preferred_root=%s)", len(child_paths), preferred_root)
 
 
-def bootstrap_child() -> Optional[IsolationAdapter]:
+def bootstrap_child() -> IsolationAdapter | None:
     """Initialize child environment using host snapshot.
 
     Returns:
@@ -73,7 +73,7 @@ def bootstrap_child() -> Optional[IsolationAdapter]:
         logger.debug("No PYISOLATE_HOST_SNAPSHOT set; skipping bootstrap")
         return None
 
-    snapshot: Dict[str, Any]
+    snapshot: dict[str, Any]
 
     # PYISOLATE_HOST_SNAPSHOT may be either a JSON string or a file path.
     # If it starts with '{', assume it's a JSON payload.
@@ -84,7 +84,7 @@ def bootstrap_child() -> Optional[IsolationAdapter]:
 
     if looks_like_path:
         try:
-            with open(snapshot_env, "r", encoding="utf-8") as fh:
+            with open(snapshot_env, encoding="utf-8") as fh:
                 snapshot_text = fh.read()
         except FileNotFoundError:
             logger.debug("Snapshot path missing (%s); skipping bootstrap", snapshot_env)
@@ -107,7 +107,7 @@ def bootstrap_child() -> Optional[IsolationAdapter]:
         logger.debug("Snapshot present without adapter_name; continuing without adapter")
         return None
 
-    adapter: Optional[IsolationAdapter]
+    adapter: IsolationAdapter | None
     try:
         adapter = load_adapter(adapter_name)
     except Exception as exc:

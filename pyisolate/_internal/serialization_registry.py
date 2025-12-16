@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +15,14 @@ class SerializerRegistry:
     serialization/deserialization hot paths.
     """
 
-    _instance: Optional["SerializerRegistry"] = None
+    _instance: SerializerRegistry | None = None
 
     def __init__(self) -> None:
-        self._serializers: Dict[str, Callable[[Any], Any]] = {}
-        self._deserializers: Dict[str, Callable[[Any], Any]] = {}
+        self._serializers: dict[str, Callable[[Any], Any]] = {}
+        self._deserializers: dict[str, Callable[[Any], Any]] = {}
 
     @classmethod
-    def get_instance(cls) -> "SerializerRegistry":
+    def get_instance(cls) -> SerializerRegistry:
         """Return the singleton instance, creating it if necessary."""
         if cls._instance is None:
             cls._instance = cls()
@@ -32,7 +32,7 @@ class SerializerRegistry:
         self,
         type_name: str,
         serializer: Callable[[Any], Any],
-        deserializer: Optional[Callable[[Any], Any]] = None,
+        deserializer: Callable[[Any], Any] | None = None,
     ) -> None:
         """Register serializer (and optional deserializer) for a type."""
         if type_name in self._serializers:
@@ -43,11 +43,11 @@ class SerializerRegistry:
             self._deserializers[type_name] = deserializer
         logger.debug("Registered serializer for type: %s", type_name)
 
-    def get_serializer(self, type_name: str) -> Optional[Callable[[Any], Any]]:
+    def get_serializer(self, type_name: str) -> Callable[[Any], Any] | None:
         """Return serializer for *type_name*, or None if not registered."""
         return self._serializers.get(type_name)
 
-    def get_deserializer(self, type_name: str) -> Optional[Callable[[Any], Any]]:
+    def get_deserializer(self, type_name: str) -> Callable[[Any], Any] | None:
         """Return deserializer for *type_name*, or None if not registered."""
         return self._deserializers.get(type_name)
 
