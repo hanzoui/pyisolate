@@ -21,7 +21,7 @@ LAYER 2: High-Level Object Serialization (serialize_for_isolation)
 Handles composite data structures:
 - Recursively traverses dicts, lists, tuples to find serializable objects
 - Dispatches tensor objects to Layer 1 for hardware-specific handling
-- Handles custom ComfyUI types (CLIP, VAE, ModelPatcher) via proxies/registries
+- Handles adapter-registered types via SerializerRegistry (pluggable)
 - Preserves object relationships and nesting structure
 - Special-cases opaque objects (represent as type name + truncated repr)
 
@@ -73,11 +73,6 @@ from typing import (
 from .model_serialization import serialize_for_isolation
 
 T = TypeVar("T")
-
-if TYPE_CHECKING:
-    ModelPatcherRegistry = Any
-    ModelSamplingRegistry = Any
-    ModelSamplingProxy = Any
 
 
 class AttrDict(dict[str, Any]):
@@ -189,52 +184,18 @@ def _prepare_for_rpc(obj: Any) -> Any:
           torch.multiprocessing's CUDA IPC reducer to handle zero-copy.
         - Otherwise, move to CPU (shared memory when possible) for transport.
 
-    Also converts ModelPatcher/ModelSampling objects into reference dictionaries
-    and downgrades unpicklable custom containers into plain serializable forms.
+    Adapter-registered types are serialized via SerializerRegistry.
+    Unpicklable custom containers are downgraded into plain serializable forms.
     """
     type_name = type(obj).__name__
 
-    # Custom serialization hook for ModelPatcher
-    if type_name == 'ModelPatcher':
-        import os
-        if os.environ.get("PYISOLATE_CHILD") == "1":
-            if not hasattr(obj, "_instance_id"):
-                raise RuntimeError(
-                    f"ModelPatcher {id(obj)} encountered in child process without _instance_id. "
-                    f"This indicates the object was not properly proxied or the isolation is broken. "
-                    f"All ModelPatcher objects in child processes must be proxies with _instance_id."
-                )
-            return {"__type__": "ModelPatcherRef", "model_id": obj._instance_id}
-
-        from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry  # type: ignore[import-not-found]
-        model_id = ModelPatcherRegistry().register(obj)
-        return {"__type__": "ModelPatcherRef", "model_id": model_id}
-
-    if type_name.startswith('ModelSampling'):
-        import os
-        if os.environ.get("PYISOLATE_CHILD") == "1":
-            if not hasattr(obj, "_instance_id"):
-                raise RuntimeError(
-                    f"ModelSampling {id(obj)} encountered in child process without _instance_id. "
-                    f"This indicates the object was not properly proxied or the isolation is broken. "
-                    f"All ModelSampling objects in child processes must be proxies with _instance_id."
-                )
-            return {"__type__": "ModelSamplingRef", "ms_id": obj._instance_id}
-
-        from comfy.isolation.model_sampling_proxy import (
-            ModelSamplingRegistry,  # type: ignore[import-not-found]
-        )
-        ms_id = ModelSamplingRegistry().register(obj)
-        return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
-
-    # Handle ModelPatcherProxy - convert to ref (child returning proxy to host)
-    if type_name == 'ModelPatcherProxy':
-        if not hasattr(obj, "_instance_id"):
-            raise RuntimeError(
-                f"ModelPatcherProxy {id(obj)} missing _instance_id. "
-                f"This should never happen - all proxies are created with instance IDs."
-            )
-        return {"__type__": "ModelPatcherRef", "model_id": obj._instance_id}
+    # Check for adapter-registered serializers first
+    from .serialization_registry import SerializerRegistry
+    registry = SerializerRegistry.get_instance()
+    if registry.has_handler(type_name):
+        serializer = registry.get_serializer(type_name)
+        if serializer:
+            return serializer(obj)
 
     try:
         import torch
@@ -264,40 +225,23 @@ def _prepare_for_rpc(obj: Any) -> Any:
 
 
 def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
-    """Rehydrate ModelPatcher references and containers after an RPC round-trip.
+    """Rehydrate reference objects and containers after an RPC round-trip.
 
-    Previously this converted CPU tensors back to CUDA, but image tensors are
-    expected to remain on CPU. Now this is a no-op passthrough except for reference
-    objects and container recursion.
+    Reference dictionaries with __type__ are converted to proxy objects or
+    real instances via adapter-registered deserializers. Containers are
+    recursively processed.
     """
-    if isinstance(obj, dict) and obj.get("__type__") == "ModelPatcherRef":
-        try:
-            is_child = os.environ.get("PYISOLATE_CHILD") == "1"
-            if is_child:
-                from comfy.isolation.model_patcher_proxy import ModelPatcherProxy
-                return ModelPatcherProxy(obj["model_id"], registry=None, manage_lifecycle=False)
-            else:
-                from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
-                return ModelPatcherRegistry()._get_instance(obj["model_id"])
-        except ImportError:
-            pass
-
-    if isinstance(obj, dict) and obj.get("__type__") in ("ModelPatcherOpaque", "ModelSamplingOpaque"):
-        return obj
-
-    if isinstance(obj, dict) and obj.get("__type__") == "ModelSamplingRef":
-        try:
-            is_child = os.environ.get("PYISOLATE_CHILD") == "1"
-            if is_child:
-                from comfy.isolation.model_sampling_proxy import ModelSamplingProxy
-                return ModelSamplingProxy(obj["ms_id"])
-            else:
-                from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry
-                return ModelSamplingRegistry()._get_instance(obj["ms_id"])
-        except ImportError:
-            pass
+    from .serialization_registry import SerializerRegistry
+    registry = SerializerRegistry.get_instance()
 
     if isinstance(obj, dict):
+        ref_type = obj.get("__type__")
+        if ref_type and registry.has_handler(ref_type):
+            deserializer = registry.get_deserializer(ref_type)
+            if deserializer:
+                return deserializer(obj)
+
+        # Handle pyisolate internal container types
         if obj.get("__pyisolate_attribute_container__") and "data" in obj:
             converted = {k: _tensor_to_cuda(v, device) for k, v in obj["data"].items()}
             return AttributeContainer(converted)
@@ -306,6 +250,7 @@ def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
             return AttrDict(converted)
         converted = {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
         return AttrDict(converted)
+
     if isinstance(obj, (list, tuple)):
         converted_seq = [_tensor_to_cuda(item, device) for item in obj]
         return type(obj)(converted_seq) if isinstance(obj, tuple) else converted_seq

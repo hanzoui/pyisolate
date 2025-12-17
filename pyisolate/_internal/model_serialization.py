@@ -1,11 +1,13 @@
 """
-Custom serialization helpers for PyIsolate.
+Generic serialization helpers for PyIsolate.
 
-These helpers let PyIsolate transparently move tensors and registered objects
-across process boundaries. ModelPatcher/CLIP/VAE objects are converted to
-lightweight references while preserving tensor sharing semantics (CUDA tensors
-stay on-device when CUDA IPC is enabled; otherwise they fall back to CPU shared
-memory for transport).
+These helpers let PyIsolate transparently move tensors and adapter-registered
+objects across process boundaries. CUDA tensors stay on-device when CUDA IPC is
+enabled; otherwise they fall back to CPU shared memory for transport.
+
+Adapter-specific types are handled via the
+SerializerRegistry, which allows adapters to register custom serializers without
+coupling pyisolate to any specific framework.
 """
 
 import contextlib
@@ -29,7 +31,7 @@ logger = logging.getLogger(__name__)
 def serialize_for_isolation(data: Any) -> Any:
     """Serialize data for transmission to an isolated process (host side).
 
-    ModelPatcher/CLIP/VAE objects are converted to reference dictionaries so the
+    Adapter-registered objects are converted to reference dictionaries so the
     isolated process can fetch them lazily. RemoteObjectHandle instances are passed
     through to preserve identity without pickling heavyweight objects.
     """
@@ -40,16 +42,11 @@ def serialize_for_isolation(data: Any) -> Any:
     # concrete instance. This preserves identity (and avoids pickling large or
     # unpicklable objects) while still allowing host-side consumers to interact
     # with the resolved object.
-    try:
-        from comfy.isolation.extension_wrapper import RemoteObjectHandle
+    from .remote_handle import RemoteObjectHandle
 
-        handle = getattr(data, "_pyisolate_remote_handle", None)
-        if isinstance(handle, RemoteObjectHandle):
-            return handle
-    except Exception as exc:
-        # If the helper cannot be imported or attribute access fails, continue
-        # with normal serialization.
-        logger.debug("Remote handle check failed: %s", exc)
+    handle = getattr(data, "_pyisolate_remote_handle", None)
+    if isinstance(handle, RemoteObjectHandle):
+        return handle
 
     # Adapter-registered serializers take precedence over built-in handlers
     registry = SerializerRegistry.get_instance()
@@ -65,77 +62,7 @@ def serialize_for_isolation(data: Any) -> Any:
             return data.cpu()
         return data
 
-    if type_name == 'ModelPatcher':
-        if os.environ.get("PYISOLATE_CHILD") == "1":
-            if hasattr(data, "_instance_id"):
-                return {"__type__": "ModelPatcherRef", "model_id": data._instance_id}
-            raise RuntimeError(
-                f"ModelPatcher in child lacks _instance_id: "
-                f"{type(data).__module__}.{type(data).__name__}"
-            )
-        from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
-        model_id = ModelPatcherRegistry().register(data)
-        return {"__type__": "ModelPatcherRef", "model_id": model_id}
-
-    if type_name == 'ModelPatcherProxy':
-        # Already a proxy, return ref dict
-        return {"__type__": "ModelPatcherRef", "model_id": data._instance_id}
-
-    if type_name == 'CLIP':
-        try:
-            from comfy.isolation.clip_proxy import CLIPRegistry
-            clip_id = CLIPRegistry().register(data)
-            return {"__type__": "CLIPRef", "clip_id": clip_id}
-        except ImportError:
-            return data
-
-    if type_name == 'CLIPProxy':
-        # Already a proxy, return ref dict
-        return {"__type__": "CLIPRef", "clip_id": data._instance_id}
-
-    if type_name == 'VAE':
-        try:
-            from comfy.isolation.vae_proxy import VAERegistry
-            vae_id = VAERegistry().register(data)
-            return {"__type__": "VAERef", "vae_id": vae_id}
-        except ImportError:
-            return data
-
-    if type_name == 'VAEProxy':
-        # Already a proxy, return as-is (return the ref dict)
-        return {"__type__": "VAERef", "vae_id": data._instance_id}
-
-    if type_name.startswith('ModelSampling'):
-        if os.environ.get("PYISOLATE_CHILD") == "1":
-            if hasattr(data, "_instance_id"):
-                return {"__type__": "ModelSamplingRef", "ms_id": data._instance_id}
-            raise RuntimeError(
-                f"ModelSampling in child lacks _instance_id: "
-                f"{type(data).__module__}.{type(data).__name__}"
-            )
-        try:
-            import copyreg
-
-            from comfy.isolation.model_sampling_proxy import ModelSamplingProxy, ModelSamplingRegistry
-
-            def _reduce_model_sampling(ms: Any) -> tuple[type[ModelSamplingProxy], tuple[int]]:
-                registry = ModelSamplingRegistry()
-                ms_id_local = registry.register(ms)
-                return (ModelSamplingProxy, (ms_id_local,))
-
-            copyreg.pickle(type(data), _reduce_model_sampling)
-
-            ms_id = ModelSamplingRegistry().register(data)
-            return {"__type__": "ModelSamplingRef", "ms_id": ms_id}
-        except ImportError:
-            return data
-
-    if type_name == 'ModelSamplingProxy':
-        return {"__type__": "ModelSamplingRef", "ms_id": data._instance_id}
-
     if isinstance(data, dict):
-        if data.get("__type__") == "ModelPatcherRef":
-            return data
         return {k: serialize_for_isolation(v) for k, v in data.items()}
 
     if isinstance(data, (list, tuple)):
@@ -152,7 +79,7 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
     extension proxy is available. Nested handles stay opaque so they can be returned
     back to the child without forcing unnecessary pickling/unpickling.
     """
-    from comfy.isolation.extension_wrapper import RemoteObjectHandle
+    from .remote_handle import RemoteObjectHandle
 
     type_name = type(data).__name__
 
@@ -169,11 +96,15 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
         except Exception:
             return data
 
-    if type_name == 'NodeOutput':
-        # Treat NodeOutput as a transparent container. Preserve current nesting
-        # semantics so top-level outputs can be concretized while nested handles
-        # stay opaque.
-        return await deserialize_from_isolation(data.args, extension, _nested=_nested)
+    # Check for adapter-registered deserializers by type name (e.g., NodeOutput)
+    if registry.has_handler(type_name):
+        deserializer = registry.get_deserializer(type_name)
+        if deserializer:
+            # For async deserializers, we need special handling
+            result = deserializer(data)
+            if hasattr(result, '__await__'):
+                return await result
+            return result
 
     if isinstance(data, dict):
         ref_type = data.get("__type__")
@@ -183,22 +114,6 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
             deserializer = registry.get_deserializer(ref_type)
             if deserializer:
                 return deserializer(data)
-
-        if ref_type == "ModelPatcherRef":
-            from comfy.isolation.model_patcher_proxy import ModelPatcherRegistry
-            return ModelPatcherRegistry()._get_instance(data["model_id"])
-
-        if ref_type == "CLIPRef":
-            from comfy.isolation.clip_proxy import CLIPRegistry
-            return CLIPRegistry()._get_instance(data["clip_id"])
-
-        if ref_type == "VAERef":
-            from comfy.isolation.vae_proxy import VAERegistry
-            return VAERegistry()._get_instance(data["vae_id"])
-
-        if ref_type == "ModelSamplingRef":
-            from comfy.isolation.model_sampling_proxy import ModelSamplingRegistry
-            return ModelSamplingRegistry()._get_instance(data["ms_id"])
 
         deserialized: dict[str, Any] = {}
         for k, v in data.items():
@@ -222,7 +137,7 @@ def deserialize_proxy_result(data: Any) -> Any:
     """Deserialize RPC results in the isolated process (child side).
 
     Reference dictionaries emitted by the host are converted into the appropriate
-    proxy instances (ModelPatcherProxy, CLIPProxy, VAEProxy) while preserving
+    proxy instances via adapter-registered deserializers while preserving
     container structure.
     """
     if isinstance(data, dict):
@@ -234,22 +149,6 @@ def deserialize_proxy_result(data: Any) -> Any:
             deserializer = registry.get_deserializer(ref_type)
             if deserializer:
                 return deserializer(data)
-
-        if ref_type == "ModelPatcherRef":
-            from comfy.isolation.model_patcher_proxy import ModelPatcherProxy
-            return ModelPatcherProxy(data["model_id"], registry=None, manage_lifecycle=False)
-
-        if ref_type == "CLIPRef":
-            from comfy.isolation.clip_proxy import CLIPProxy
-            return CLIPProxy(data["clip_id"], registry=None, manage_lifecycle=False)
-
-        if ref_type == "VAERef":
-            from comfy.isolation.vae_proxy import VAEProxy
-            return VAEProxy(data["vae_id"])
-
-        if ref_type == "ModelSamplingRef":
-            from comfy.isolation.model_sampling_proxy import ModelSamplingProxy
-            return ModelSamplingProxy(data["ms_id"])
 
         return {k: deserialize_proxy_result(v) for k, v in data.items()}
 

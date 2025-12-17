@@ -113,6 +113,14 @@ def build_extension_snapshot(module_path: str) -> dict[str, object]:
         except Exception as exc:
             logger.warning("Adapter path config failed: %s", exc)
 
+        # Register serializers in host process (needed for RPC serialization)
+        try:
+            from .serialization_registry import SerializerRegistry
+            registry = SerializerRegistry.get_instance()
+            adapter.register_serializers(registry)
+        except Exception as exc:
+            logger.warning("Adapter serializer registration failed: %s", exc)
+
     snapshot.update(
         {
             "adapter_name": adapter.identifier if adapter else None,

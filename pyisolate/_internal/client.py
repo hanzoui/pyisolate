@@ -30,8 +30,23 @@ from .shared import AsyncRPC, ProxiedSingleton, set_child_rpc_instance
 logger = logging.getLogger(__name__)
 
 _adapter: Optional[IsolationAdapter] = None
-if os.environ.get("PYISOLATE_CHILD"):
-    _adapter = bootstrap_child()
+_bootstrap_done = False
+
+
+def _ensure_bootstrap() -> None:
+    """Bootstrap the child environment on first call.
+
+    Deferred to avoid circular imports during module initialization.
+    The adapter loads ComfyUI modules which try to import pyisolate,
+    but pyisolate's __init__ might not be fully initialized yet.
+    """
+    global _adapter, _bootstrap_done
+    if _bootstrap_done:
+        return
+    _bootstrap_done = True
+
+    if os.environ.get("PYISOLATE_CHILD"):
+        _adapter = bootstrap_child()
 
 
 async def async_entrypoint(
@@ -55,6 +70,9 @@ async def async_entrypoint(
         from_extension: Queue carrying extension → host RPC messages.
         log_queue: Optional queue for forwarding child logs to the host.
     """
+    # Deferred bootstrap to avoid circular imports
+    _ensure_bootstrap()
+
     if os.environ.get("PYISOLATE_CHILD") and log_queue is not None:
         root = logging.getLogger()
         root.addHandler(QueueHandler(log_queue))
