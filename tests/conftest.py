@@ -25,7 +25,7 @@ os.environ.setdefault("COMFYUI_ROOT", COMFYUI_ROOT)
 @pytest.fixture
 def patch_extension_launch(monkeypatch):
     """Prevent real subprocess launches during unit tests.
-    
+
     NOTE: This fixture is NOT autouse - integration tests should NOT use it.
     Unit tests that need mocked launch should explicitly request this fixture.
     """

@@ -1,4 +1,3 @@
-import json
 
 from pyisolate._internal import host
 

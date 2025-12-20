@@ -11,7 +11,9 @@ class FakeExtension:
     def __class_getitem__(cls, item):
         return cls
 
-    def __init__(self, module_path: str, extension_type: Any, config: dict[str, Any], venv_root_path: str) -> None:
+    def __init__(
+        self, module_path: str, extension_type: Any, config: dict[str, Any], venv_root_path: str
+    ) -> None:
         self.module_path = module_path
         self.extension_type = extension_type
         self.config = config
@@ -59,7 +61,7 @@ def test_load_extension_returns_host_extension(monkeypatch, tmp_path):
     assert proxy.proxy.run() == "ok"
     assert getattr(proxy, "_rpc", None) is mgr.extensions["demo"].rpc
     # Subsequent access uses cached proxy, no extra starts
-    proxy.proxy
+    _ = proxy.proxy  # Access to verify caching works
     ext = mgr.extensions["demo"]
     assert isinstance(ext, FakeExtension)
     assert ext.started == 1
@@ -97,7 +99,7 @@ def test_stop_all_extensions_calls_stop(tmp_path):
 def test_stop_all_extensions_logs_error(caplog, tmp_path):
     mgr = make_manager(tmp_path)
     cfg = base_config(tmp_path)
-    proxy = mgr.load_extension(cfg)
+    _proxy = mgr.load_extension(cfg)  # noqa: F841 - load to register extension
     ext = mgr.extensions["demo"]
 
     def boom():

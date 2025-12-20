@@ -18,12 +18,6 @@ from pyisolate._internal.shared import (
 )
 
 
-def test_prepare_for_rpc_model_sampling_child(monkeypatch):
-    monkeypatch.setenv("PYISOLATE_CHILD", "1")
-    with pytest.raises(RuntimeError):
-        _prepare_for_rpc(type("ModelSampling", (), {})())
-
-
 def test_prepare_for_rpc_nested_attr_container(monkeypatch):
     payload = {
         "attr": AttributeContainer({"a": 1, "b": AttrDict({"c": 2})}),

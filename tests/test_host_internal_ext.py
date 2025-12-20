@@ -41,10 +41,10 @@ class DummyContext:
     def __init__(self):
         self.q = queue.Queue()
 
-    def Queue(self):
+    def Queue(self):  # noqa: N802 - matches multiprocessing API
         return queue.Queue()
 
-    def Process(self, target, args):
+    def Process(self, target, args):  # noqa: N802 - matches multiprocessing API
         return DummyProcess()
 
 
@@ -152,7 +152,8 @@ def test_install_dependencies_respects_lock_cache(monkeypatch, tmp_path):
         "pyisolate": host.pyisolate_version,
         "python": host.sys.version,
     }
-    import json, hashlib
+    import hashlib
+    import json
 
     fp = hashlib.sha256(json.dumps(descriptor, sort_keys=True).encode()).hexdigest()
     lock.write_text(json.dumps({"fingerprint": fp, "descriptor": descriptor}))

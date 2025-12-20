@@ -1,5 +1,3 @@
-import builtins
-import types
 
 import pytest
 
@@ -53,8 +51,8 @@ def _patch_entry_points(monkeypatch, eps_list):
         import importlib_metadata  # type: ignore
 
         monkeypatch.setattr(importlib_metadata, "entry_points", fake_entry_points)
-    except Exception:
-        pass
+    except ImportError:
+        pass  # importlib_metadata not installed, fine for Python 3.10+
 
 
 def test_load_adapter_by_name(monkeypatch):

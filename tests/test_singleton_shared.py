@@ -1,7 +1,5 @@
 """Unit tests for SingletonMetaclass and ProxiedSingleton behavior."""
 
-import asyncio
-import types
 
 import pytest
 
@@ -122,7 +120,7 @@ class TestUseRemote:
         assert isinstance(child_proxy, FakeCaller)
 
         # Attribute on remote should reference the same child proxy
-        assert getattr(parent_proxy, "child") is child_proxy
+        assert parent_proxy.child is child_proxy
 
 
 class TestLocalMethodRegistry:

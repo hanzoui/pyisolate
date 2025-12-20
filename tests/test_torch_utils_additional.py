@@ -1,7 +1,5 @@
 from types import SimpleNamespace
 
-import pytest
-
 from pyisolate._internal import torch_utils
 
 

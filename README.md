@@ -309,6 +309,68 @@ This structure ensures that:
 └─────────────────────┘              └─────────────┘
 ```
 
+## Implementing a Host Adapter (IsolationAdapter)
+
+When integrating pyisolate with your application (like ComfyUI), you implement the `IsolationAdapter` protocol. This tells pyisolate how to configure isolated processes for your environment.
+
+### Reference Implementation
+
+The canonical example is in `tests/fixtures/test_adapter.py`:
+
+```python
+from pyisolate.interfaces import IsolationAdapter
+from pyisolate._internal.shared import ProxiedSingleton
+
+class MockHostAdapter(IsolationAdapter):
+    """Reference adapter showing all protocol methods."""
+
+    @property
+    def identifier(self) -> str:
+        """Return unique adapter identifier (e.g., 'comfyui')."""
+        return "myapp"
+
+    def get_path_config(self, module_path: str) -> dict:
+        """Configure sys.path for isolated extensions.
+
+        Returns:
+            - preferred_root: Your app's root directory
+            - additional_paths: Extra paths for imports
+        """
+        return {
+            "preferred_root": "/path/to/myapp",
+            "additional_paths": ["/path/to/myapp/extensions"],
+        }
+
+    def setup_child_environment(self, snapshot: dict) -> None:
+        """Configure child process after sys.path reconstruction."""
+        pass  # Set up logging, environment, etc.
+
+    def register_serializers(self, registry) -> None:
+        """Register custom type serializers for RPC transport."""
+        registry.register(
+            "MyCustomType",
+            serializer=lambda obj: {"data": obj.data},
+            deserializer=lambda d: MyCustomType(d["data"]),
+        )
+
+    def provide_rpc_services(self) -> list:
+        """Return ProxiedSingleton classes to expose via RPC."""
+        return [MyRegistry, MyProgressReporter]
+
+    def handle_api_registration(self, api, rpc) -> None:
+        """Post-registration hook for API-specific setup."""
+        pass
+```
+
+### Testing Your Adapter
+
+Run the contract tests to verify your adapter implements the protocol correctly:
+
+```bash
+# The test suite verifies all protocol methods
+pytest tests/test_adapter_contract.py -v
+```
+
 ## Roadmap
 
 ### ✅ Completed

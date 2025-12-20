@@ -1,7 +1,6 @@
 """Tests for extension naming, dependency validation, and path safety."""
 
 import os
-from pathlib import Path
 
 import pytest
 

@@ -1,16 +1,12 @@
-import asyncio
-import os
 import sys
-from pathlib import Path
 from types import ModuleType
-from unittest.mock import MagicMock
 
 import pytest
 
 from pyisolate._internal import client
+from pyisolate._internal.shared import ProxiedSingleton
 from pyisolate.config import ExtensionConfig
 from pyisolate.shared import ExtensionBase
-from pyisolate._internal.shared import ProxiedSingleton
 
 
 class DummyExtension(ExtensionBase):

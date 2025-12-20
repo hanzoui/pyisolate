@@ -457,9 +457,10 @@ class Extension(Generic[T]):
         self.venv_path.parent.mkdir(parents=True, exist_ok=True)
 
         uv_path = shutil.which("uv")
-        if not uv_path:
+        if uv_path is None:
             raise RuntimeError(
-                "uv is required but not found. Install it with: pip install uv\n"
+                "uv is required but not found. "
+                "Install it manually with: pip install uv\n"
                 "See https://github.com/astral-sh/uv for installation options."
             )
 
