@@ -456,6 +456,24 @@ class AsyncRPC:
         )
         self.blocking_future.set_result(None)
 
+    def update_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Update the default event loop for RPC dispatch.
+        
+        This MUST be called when the main asyncio event loop changes (e.g., 
+        between workflow executions in ComfyUI where asyncio.run() creates
+        a new loop for each workflow).
+        
+        Args:
+            loop: The new event loop to use for dispatching RPC callbacks.
+        """
+        old_loop = self.default_loop
+        self.default_loop = loop
+        logger.debug(
+            f"[PYISOLATE][RPC] update_event_loop: old_loop={id(old_loop)} "
+            f"(closed={old_loop.is_closed() if old_loop else 'N/A'}) -> "
+            f"new_loop={id(loop)} (closed={loop.is_closed()})"
+        )
+
     def run(self) -> None:
         self.blocking_future = self.default_loop.create_future()
         self._threads = [

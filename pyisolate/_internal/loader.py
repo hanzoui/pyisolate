@@ -29,7 +29,7 @@ def _try_direct_import(module_class: str) -> IsolationAdapter | None:
         import importlib
         module = importlib.import_module(module_path)
         adapter_cls = getattr(module, class_name)
-        logger.info("📚 [PyIsolate][Loader] Direct import succeeded: %s", module_class)
+        logger.info("Direct import succeeded: %s", module_class)
         return cast(IsolationAdapter, adapter_cls())
     except Exception as exc:
         logger.debug("Direct import failed for %s: %s", module_class, exc)
@@ -77,12 +77,12 @@ def load_adapter(name: str | None = None) -> IsolationAdapter | None:
             if len(matches) > 1:
                 raise ValueError(f"Multiple adapters registered as '{name}'")
             adapter_cls = matches[0].load()
-            logger.info("📚 [PyIsolate][Loader] Loaded adapter via entry point: %s", name)
+            logger.info("Loaded adapter via entry point: %s", name)
             return cast(IsolationAdapter, adapter_cls())
 
         if len(eps_list) == 1:
             ep = eps_list[0]
-            logger.info("📚 [PyIsolate][Loader] Auto-detected adapter: %s", ep.name)
+            logger.info("Auto-detected adapter: %s", ep.name)
             adapter_cls = ep.load()
             return cast(IsolationAdapter, adapter_cls())
 
@@ -104,7 +104,7 @@ def load_adapter(name: str | None = None) -> IsolationAdapter | None:
     for fallback_name, module_class in _FALLBACK_ADAPTERS.items():
         adapter = _try_direct_import(module_class)
         if adapter:
-            logger.info("📚 [PyIsolate][Loader] Using fallback adapter: %s", fallback_name)
+            logger.info("Using fallback adapter: %s", fallback_name)
             return adapter
 
     logger.debug("No adapters found via entry points or fallback")
