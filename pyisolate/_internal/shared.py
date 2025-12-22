@@ -50,11 +50,13 @@ shared memory instead of pipes). Current design prioritizes maintainability over
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import inspect
 import logging
 import os
 import queue
+import socket
 import threading
 import uuid
 from collections.abc import Iterable
@@ -63,11 +65,13 @@ from typing import (
     Any,
     Callable,
     Literal,
+    Protocol,
     TypedDict,
     TypeVar,
     Union,
     cast,
     get_type_hints,
+    runtime_checkable,
 )
 
 from .model_serialization import serialize_for_isolation
@@ -142,11 +146,368 @@ class AttributeContainer:
 # We only import this to get type hinting working. It can also be a torch.multiprocessing
 if TYPE_CHECKING:
     import multiprocessing as typehint_mp
+    from multiprocessing.connection import Connection
 else:
     import multiprocessing
     typehint_mp = multiprocessing
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Transport Abstraction Layer
+# ---------------------------------------------------------------------------
+# These classes abstract the IPC mechanism, allowing AsyncRPC to work with
+# either multiprocessing.Queue (standard) or multiprocessing.connection.Connection
+# (Unix Domain Sockets for bwrap sandbox).
+
+
+@runtime_checkable
+class RPCTransport(Protocol):
+    """Protocol for RPC transport mechanisms.
+
+    Implementations must provide thread-safe send/recv operations.
+    """
+
+    def send(self, obj: Any) -> None:
+        """Send an object to the remote endpoint."""
+        ...
+
+    def recv(self) -> Any:
+        """Receive an object from the remote endpoint. Blocks until available."""
+        ...
+
+    def close(self) -> None:
+        """Close the transport. Further send/recv calls may fail."""
+        ...
+
+
+class QueueTransport:
+    """Transport using multiprocessing.Queue pairs (standard IPC)."""
+
+    def __init__(
+        self,
+        send_queue: typehint_mp.Queue[Any],
+        recv_queue: typehint_mp.Queue[Any],
+    ) -> None:
+        self._send_queue = send_queue
+        self._recv_queue = recv_queue
+
+    def send(self, obj: Any) -> None:
+        self._send_queue.put(obj)
+
+    def recv(self) -> Any:
+        return self._recv_queue.get()
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._send_queue.close()
+        with contextlib.suppress(Exception):
+            self._recv_queue.close()
+
+
+class ConnectionTransport:
+    """Transport using multiprocessing.connection.Connection (Unix Domain Sockets).
+
+    Used for bwrap sandbox isolation where Queue-based IPC is not available.
+    """
+
+    def __init__(self, conn: Connection) -> None:
+        self._conn = conn
+        self._lock = threading.Lock()
+
+    def send(self, obj: Any) -> None:
+        with self._lock:
+            self._conn.send(obj)
+
+    def recv(self) -> Any:
+        return self._conn.recv()
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._conn.close()
+
+
+class JSONSocketTransport:
+    """Transport using raw sockets + JSON-RPC (pickle-safe).
+
+    This transport uses JSON serialization instead of pickle to prevent
+    RCE attacks via __reduce__ exploits from sandboxed child processes.
+
+    Used for ALL Linux isolation modes (sandbox and non-sandbox).
+    """
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+        self._lock = threading.Lock()
+        self._recv_lock = threading.Lock()
+
+    def send(self, obj: Any) -> None:
+        """Serialize to JSON with length prefix."""
+        import json
+        import struct
+
+        try:
+            data = json.dumps(obj, default=self._json_default).encode('utf-8')
+        except TypeError as e:
+            type_name = type(obj).__name__
+            logger.error(
+                "📚 [PyIsolate][JSON-RPC] Cannot serialize object:\n"
+                "  Type: %s\n"
+                "  Error: %s\n"
+                "  Resolution: Register a custom serializer via SerializerRegistry",
+                type_name, e
+            )
+            raise TypeError(f"Cannot JSON-serialize {type_name}: {e}") from e
+
+        msg = struct.pack('>I', len(data)) + data
+        with self._lock:
+            self._sock.sendall(msg)
+
+    def recv(self) -> Any:
+        """Receive length-prefixed JSON message."""
+        import json
+        import struct
+
+        with self._recv_lock:
+            raw_len = self._recvall(4)
+            if not raw_len or len(raw_len) < 4:
+                raise ConnectionError("Socket closed or incomplete length header")
+            msg_len = struct.unpack('>I', raw_len)[0]
+            if msg_len > 100 * 1024 * 1024:  # 100MB sanity limit
+                raise ValueError(f"Message too large: {msg_len} bytes")
+            data = self._recvall(msg_len)
+            if len(data) < msg_len:
+                raise ConnectionError(f"Incomplete message: got {len(data)}/{msg_len} bytes")
+            return json.loads(data.decode('utf-8'), object_hook=self._json_object_hook)
+
+    def _recvall(self, n: int) -> bytes:
+        """Receive exactly n bytes from the socket."""
+        chunks = []
+        remaining = n
+        while remaining > 0:
+            chunk = self._sock.recv(min(remaining, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b''.join(chunks)
+
+    def _json_default(self, obj: Any) -> Any:
+        """Handle non-JSON types during serialization."""
+        import traceback as tb_module
+        from enum import Enum
+        from types import MethodType, FunctionType
+
+        # Skip callables/methods - they can't be serialized and are typically not needed
+        if isinstance(obj, (MethodType, FunctionType)) or callable(obj) and not isinstance(obj, type):
+            # Return a placeholder that indicates this was a callable
+            return {
+                '__pyisolate_callable__': True,
+                'type': type(obj).__name__,
+                'name': getattr(obj, '__name__', str(obj))
+            }
+
+        # Handle exceptions explicitly
+        if isinstance(obj, BaseException):
+            return {
+                '__pyisolate_exception__': True,
+                'type': type(obj).__name__,
+                'module': type(obj).__module__,
+                'args': [str(a) for a in obj.args],  # Convert args to strings for JSON
+                'message': str(obj),
+                'traceback': tb_module.format_exc() if tb_module.format_exc() != 'NoneType: None\n' else ''
+            }
+
+        # Handle Enums (must be before __dict__ check since Enums have __dict__)
+        if isinstance(obj, Enum):
+            return {
+                '__pyisolate_enum__': True,
+                'type': type(obj).__name__,
+                'module': type(obj).__module__,
+                'name': obj.name,
+                'value': obj.value if isinstance(obj.value, (int, str, float, bool, type(None))) else str(obj.value)
+            }
+
+        # Handle bytes (common in some contexts)
+        if isinstance(obj, bytes):
+            import base64
+            return {
+                '__pyisolate_bytes__': True,
+                'data': base64.b64encode(obj).decode('ascii')
+            }
+
+        # Handle UUID objects
+        import uuid
+        if isinstance(obj, uuid.UUID):
+            return str(obj)
+
+        # Handle PyTorch tensors BEFORE __dict__ check (tensors have __dict__ but shouldn't use it)
+        try:
+            import torch
+            if isinstance(obj, torch.Tensor):
+                from .tensor_serializer import serialize_tensor
+                return serialize_tensor(obj)
+        except ImportError:
+            pass
+
+        # Handle objects with __dict__ (preserve full state)
+        if hasattr(obj, '__dict__') and not callable(obj):
+            try:
+                # Recursively serialize __dict__ contents AND class attributes
+                serialized_dict = {}
+                
+                # First, collect JSON-serializable class attributes (not methods/descriptors)
+                for klass in type(obj).__mro__:
+                    if klass is object:
+                        continue
+                    for k, v in vars(klass).items():
+                        if k.startswith('_'):
+                            continue
+                        # Only include primitive types as class attributes
+                        if isinstance(v, (int, float, str, bool, type(None))):
+                            if k not in serialized_dict:  # instance attrs take priority
+                                serialized_dict[k] = v
+                
+                # Then add instance attributes (which override class attrs)
+                for k, v in obj.__dict__.items():
+                    # Skip private attributes and methods/callables
+                    if k.startswith('_'):
+                        continue
+                    if callable(v):
+                        continue
+                    try:
+                        # Test if value is JSON-serializable
+                        import json
+                        json.dumps(v)
+                        serialized_dict[k] = v
+                    except TypeError:
+                        # Try to serialize with our default handler
+                        serialized_dict[k] = self._json_default(v)
+
+                return {
+                    '__pyisolate_object__': True,
+                    'type': type(obj).__name__,
+                    'module': type(obj).__module__,
+                    'data': serialized_dict
+                }
+            except Exception as e:
+                logger.warning("📚 [PyIsolate][JSON-RPC] Failed to serialize __dict__ of %s: %s",
+                             type(obj).__name__, e)
+
+        # Fail loudly for non-serializable types
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable. "
+                       f"Register a serializer via SerializerRegistry.register()")
+
+    def _json_object_hook(self, dct: dict) -> Any:
+        """Reconstruct objects from JSON during deserialization."""
+        from types import SimpleNamespace
+
+        # Reconstruct exceptions
+        if dct.get('__pyisolate_exception__'):
+            exc_type = dct.get('type', 'Exception')
+            exc_module = dct.get('module', 'builtins')
+            msg = dct.get('message', '')
+            remote_tb = dct.get('traceback', '')
+            # Create a RuntimeError that preserves the original error info
+            error = RuntimeError(f"Remote {exc_module}.{exc_type}: {msg}")
+            if remote_tb:
+                error.__pyisolate_remote_traceback__ = remote_tb  # type: ignore
+            return error
+
+        # Reconstruct bytes
+        if dct.get('__pyisolate_bytes__'):
+            import base64
+            return base64.b64decode(dct['data'])
+
+        # Handle TensorRef - deserialize tensors during JSON parsing
+        if dct.get('__type__') == 'TensorRef':
+            from .serialization_registry import SerializerRegistry
+            registry = SerializerRegistry.get_instance()
+            if registry.has_handler('TensorRef'):
+                deserializer = registry.get_deserializer('TensorRef')
+                if deserializer:
+                    return deserializer(dct)
+            # Fallback: direct import if registry not yet populated
+            try:
+                from .tensor_serializer import deserialize_tensor
+                return deserialize_tensor(dct)
+            except Exception:
+                pass
+            return dct  # Last resort fallback
+
+        # Reconstruct Enums
+        if dct.get('__pyisolate_enum__'):
+            import importlib
+            module_name = dct.get('module', 'builtins')
+            type_name = dct.get('type', 'Enum')
+            enum_name = dct.get('name', '')
+            try:
+                module = importlib.import_module(module_name)
+                enum_type = getattr(module, type_name, None)
+                if enum_type and hasattr(enum_type, enum_name):
+                    return getattr(enum_type, enum_name)
+            except Exception:
+                pass
+            # Fallback: return the raw value if we can't reconstruct the enum
+            return dct.get('value')
+
+        # Reconstruct generic objects - try to recreate the original class
+        if dct.get('__pyisolate_object__'):
+            import importlib
+            data = dct.get('data', {})
+            module_name = dct.get('module')
+            type_name = dct.get('type')
+            
+            # Try to reconstruct the original class
+            if module_name and type_name:
+                try:
+                    module = importlib.import_module(module_name)
+                    cls = getattr(module, type_name, None)
+                    if cls is not None:
+                        # Try to create instance - some classes have special constructors
+                        # First, try if it takes a 'cond' arg (common for CONDRegular etc.)
+                        if 'cond' in data:
+                            try:
+                                return cls(data['cond'])
+                            except Exception:
+                                pass
+                        # Try no-arg constructor (calls __init__)
+                        try:
+                            obj = cls()
+                            for k, v in data.items():
+                                setattr(obj, k, v)
+                            return obj
+                        except Exception:
+                            pass
+                        # Last resort: __new__ without __init__ then set attributes
+                        try:
+                            obj = cls.__new__(cls)
+                            for k, v in data.items():
+                                setattr(obj, k, v)
+                            return obj
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            
+            # Fallback: return SimpleNamespace with metadata
+            ns = SimpleNamespace(**data)
+            ns.__pyisolate_type__ = type_name
+            ns.__pyisolate_module__ = module_name
+            return ns
+
+        return dct
+
+    def close(self) -> None:
+        """Close the socket connection."""
+        with contextlib.suppress(Exception):
+            try:
+                self._sock.shutdown(2)  # SHUT_RDWR
+            except Exception:
+                pass
+            self._sock.close()
+
 
 # Debug flag for verbose RPC message logging (set via PYISOLATE_DEBUG_RPC=1)
 debug_all_messages = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
@@ -192,10 +553,19 @@ def _prepare_for_rpc(obj: Any) -> Any:
     # Check for adapter-registered serializers first
     from .serialization_registry import SerializerRegistry
     registry = SerializerRegistry.get_instance()
+
+    # Try exact type name first (fast path)
     if registry.has_handler(type_name):
         serializer = registry.get_serializer(type_name)
         if serializer:
             return serializer(obj)
+
+    # Check base classes for inheritance support
+    for base in type(obj).__mro__[1:]:  # Skip obj itself
+        if registry.has_handler(base.__name__):
+            serializer = registry.get_serializer(base.__name__)
+            if serializer:
+                return serializer(obj)
 
     try:
         import torch
@@ -231,6 +601,21 @@ def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
     real instances via adapter-registered deserializers. Containers are
     recursively processed.
     """
+    from types import SimpleNamespace
+    if isinstance(obj, SimpleNamespace):
+        type_name = getattr(obj, "__pyisolate_type__", None)
+        if type_name == "RemoteObjectHandle":
+            from .remote_handle import RemoteObjectHandle
+            return RemoteObjectHandle(obj.object_id, obj.type_name)
+
+        # CRITICAL FIX: Check for embedded remote handle
+        handle = getattr(obj, "_pyisolate_remote_handle", None)
+        if handle is not None:
+            # Recursively unwrap the handle (it's also a SimpleNamespace)
+            return _tensor_to_cuda(handle, device)
+
+        return obj
+
     from .serialization_registry import SerializerRegistry
     registry = SerializerRegistry.get_instance()
 
@@ -357,23 +742,56 @@ proxied_type = TypeVar("proxied_type", bound=object)
 
 
 class AsyncRPC:
+    """Asynchronous RPC layer for inter-process communication.
+
+    Supports two initialization modes:
+    1. Legacy: Pass recv_queue and send_queue (backward compatible)
+    2. Transport: Pass a single RPCTransport instance (for sandbox/UDS)
+    """
+
     def __init__(
         self,
-        recv_queue: typehint_mp.Queue[RPCMessage],
-        send_queue: typehint_mp.Queue[RPCMessage],
+        recv_queue: typehint_mp.Queue[RPCMessage] | None = None,
+        send_queue: typehint_mp.Queue[RPCMessage] | None = None,
+        *,
+        transport: RPCTransport | None = None,
     ):
         self.id = str(uuid.uuid4())
         self.handling_call_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
             self.id + "_handling_call_id", default=None)
-        self.recv_queue = recv_queue
-        self.send_queue = send_queue
+
+        # Support both legacy queue interface and new transport interface
+        if transport is not None:
+            self._transport = transport
+        elif recv_queue is not None and send_queue is not None:
+            self._transport = QueueTransport(send_queue, recv_queue)
+        else:
+            raise ValueError("Must provide either (recv_queue, send_queue) or transport")
+
         self.lock = threading.Lock()
         self.pending: dict[int, RPCPendingRequest] = {}
         self.default_loop = asyncio.get_event_loop()
+        self._loop_lock = threading.Lock()  # Protects default_loop updates
         self.callees: dict[str, object] = {}
         self.callbacks: dict[str, Any] = {}
         self.blocking_future: asyncio.Future[Any] | None = None
         self.outbox: queue.Queue[RPCPendingRequest | None] = queue.Queue()
+
+    def update_event_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """
+        Update the default event loop used by this RPC instance.
+        
+        Call this method when the event loop changes (e.g., between ComfyUI workflows)
+        to ensure RPC calls are scheduled on the correct loop.
+        
+        Args:
+            loop: The new event loop to use. If None, uses asyncio.get_event_loop().
+        """
+        with self._loop_lock:
+            if loop is None:
+                loop = asyncio.get_event_loop()
+            self.default_loop = loop
+            logger.debug(f"RPC {self.id}: Updated default_loop to {loop}")
 
     def register_callback(self, func: Any) -> str:
         callback_id = str(uuid.uuid4())
@@ -456,24 +874,6 @@ class AsyncRPC:
         )
         self.blocking_future.set_result(None)
 
-    def update_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Update the default event loop for RPC dispatch.
-        
-        This MUST be called when the main asyncio event loop changes (e.g., 
-        between workflow executions in ComfyUI where asyncio.run() creates
-        a new loop for each workflow).
-        
-        Args:
-            loop: The new event loop to use for dispatching RPC callbacks.
-        """
-        old_loop = self.default_loop
-        self.default_loop = loop
-        logger.debug(
-            f"[PYISOLATE][RPC] update_event_loop: old_loop={id(old_loop)} "
-            f"(closed={old_loop.is_closed() if old_loop else 'N/A'}) -> "
-            f"new_loop={id(loop)} (closed={loop.is_closed()})"
-        )
-
     def run(self) -> None:
         self.blocking_future = self.default_loop.create_future()
         self._threads = [
@@ -524,41 +924,166 @@ class AsyncRPC:
                 kind="response", call_id=request["call_id"], result=None, error=str(exc)
             )
 
-        self.send_queue.put(_prepare_for_rpc(response))
+        # Try to send response; if serialization fails, send error response instead
+        try:
+            self._transport.send(_prepare_for_rpc(response))
+        except (TypeError, ValueError) as serialize_exc:
+            # FAIL LOUD: Log and propagate serialization failures
+            logger.error(
+                "RPC response serialization failed for call_id=%s: %s",
+                request["call_id"], serialize_exc
+            )
+            # Try to send a minimal error response (no result, just error string)
+            error_response = RPCResponse(
+                kind="response",
+                call_id=request["call_id"],
+                result=None,
+                error=f"Response serialization failed: {serialize_exc}"
+            )
+            try:
+                self._transport.send(_prepare_for_rpc(error_response))
+            except Exception as fallback_exc:
+                # If even the error response can't be sent, raise to kill the RPC
+                raise RuntimeError(
+                    f"Cannot send RPC response or error for call_id={request['call_id']}: "
+                    f"original error: {serialize_exc}, fallback error: {fallback_exc}"
+                ) from serialize_exc
+
+    def _get_valid_loop(self, preferred_loop: asyncio.AbstractEventLoop | None = None) -> asyncio.AbstractEventLoop:
+        """
+        Get a valid (non-closed) event loop for RPC operations.
+        
+        This handles the case where the original loop has been closed
+        (e.g., between ComfyUI workflows) and we need to use the current loop.
+        
+        The preferred_loop is typically the cached self.default_loop. If it's closed,
+        this method will:
+        1. Check if self.default_loop has been updated (via update_event_loop())
+        2. Try to get the running loop (if called from async context)
+        3. Return None if no valid loop is available (caller must handle)
+        
+        Args:
+            preferred_loop: The loop we'd prefer to use if it's still valid
+            
+        Returns:
+            A valid, non-closed event loop
+            
+        Raises:
+            RuntimeError: If no valid event loop is available
+        """
+        # If preferred loop is valid, use it
+        if preferred_loop is not None and not preferred_loop.is_closed():
+            return preferred_loop
+
+        # Check if default_loop has been updated by main thread
+        with self._loop_lock:
+            current_default = self.default_loop
+            if current_default is not None and not current_default.is_closed():
+                return current_default
+
+        # Try to get the running event loop (works if called from async context)
+        try:
+            loop = asyncio.get_running_loop()
+            if not loop.is_closed():
+                with self._loop_lock:
+                    self.default_loop = loop
+                return loop
+        except RuntimeError:
+            pass  # No running loop
+
+        # For the main thread, try get_event_loop
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                with self._loop_lock:
+                    self.default_loop = loop
+                return loop
+        except RuntimeError:
+            pass
+
+        # No valid loop available - caller must handle this
+        raise RuntimeError(
+            f"RPC {self.id}: No valid event loop available. "
+            "Call update_event_loop() from the main thread after creating a new loop."
+        )
 
     def _recv_thread(self) -> None:
         while True:
             try:
-                item = _tensor_to_cuda(self.recv_queue.get())
+                item = _tensor_to_cuda(self._transport.recv())
             except Exception as exc:
                 raise RuntimeError(f"RPC recv failed (rpc_id={self.id}): {exc}") from exc
 
             if item is None:
                 if self.blocking_future:
-                    self.default_loop.call_soon_threadsafe(self.blocking_future.set_result, None)
+                    try:
+                        loop = self._get_valid_loop(self.default_loop)
+                        loop.call_soon_threadsafe(self.blocking_future.set_result, None)
+                    except RuntimeError:
+                        pass  # Loop closed, blocking_future won't be awaited anyway
                 break
 
             if item["kind"] == "response":
                 with self.lock:
                     pending_request = self.pending.pop(item["call_id"], None)
                 if pending_request:
-                    if item.get("error"):
-                        pending_request["calling_loop"].call_soon_threadsafe(
-                            pending_request["future"].set_exception, Exception(item["error"]))
-                    else:
-                        pending_request["calling_loop"].call_soon_threadsafe(
-                            pending_request["future"].set_result, item["result"])
+                    # Get a valid loop - the calling_loop may be closed
+                    calling_loop = pending_request["calling_loop"]
+                    if calling_loop.is_closed():
+                        # Original loop is closed, try to get the current one
+                        try:
+                            calling_loop = self._get_valid_loop()
+                        except RuntimeError:
+                            logger.warning(
+                                f"RPC {self.id}: Cannot deliver response {item['call_id']} - "
+                                "original loop closed and no current loop available"
+                            )
+                            continue
+
+                    try:
+                        if item.get("error"):
+                            calling_loop.call_soon_threadsafe(
+                                pending_request["future"].set_exception, Exception(item["error"]))
+                        else:
+                            calling_loop.call_soon_threadsafe(
+                                pending_request["future"].set_result, item["result"])
+                    except RuntimeError as e:
+                        if "Event loop is closed" in str(e):
+                            logger.warning(
+                                f"RPC {self.id}: Loop closed while delivering response {item['call_id']}"
+                            )
+                        else:
+                            raise
 
             elif item["kind"] in ("call", "callback"):
                 request = cast(Union[RPCRequest, RPCCallback], item)
                 request_parent = request.get("parent_call_id")
-                call_on_loop = self.default_loop
+
+                # Get a valid loop for dispatching this request
+                try:
+                    call_on_loop = self._get_valid_loop(self.default_loop)
+                except RuntimeError as e:
+                    logger.error(
+                        f"RPC {self.id}: Cannot dispatch request {request.get('call_id')} - "
+                        f"no valid event loop: {e}"
+                    )
+                    # Send error response back
+                    error_response = RPCResponse(
+                        kind="response",
+                        call_id=request["call_id"],
+                        result=None,
+                        error=f"No valid event loop available: {e}"
+                    )
+                    self._transport.send(_prepare_for_rpc(error_response))
+                    continue
 
                 if request_parent is not None:
                     with self.lock:
                         pending_request = self.pending.get(request_parent)
                     if pending_request:
-                        call_on_loop = pending_request["calling_loop"]
+                        parent_loop = pending_request["calling_loop"]
+                        if not parent_loop.is_closed():
+                            call_on_loop = parent_loop
 
                 async def call_with_context(captured_request: RPCRequest | RPCCallback) -> None:
                     token = self.handling_call_id.set(captured_request["call_id"])
@@ -567,7 +1092,16 @@ class AsyncRPC:
                     finally:
                         self.handling_call_id.reset(token)
 
-                asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
+                try:
+                    asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
+                except RuntimeError as e:
+                    if "Event loop is closed" in str(e):
+                        # Loop closed between our check and the call - try again with fresh loop
+                        logger.warning(f"RPC {self.id}: Loop closed, retrying with fresh loop")
+                        call_on_loop = self._get_valid_loop()
+                        asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
+                    else:
+                        raise
 
     def _send_thread(self) -> None:
         id_gen = 0
@@ -594,13 +1128,18 @@ class AsyncRPC:
                     kwargs=_prepare_for_rpc(serialized_kwargs),
                 )
                 try:
-                    self.send_queue.put(request_msg)
+                    self._transport.send(request_msg)
                 except Exception as exc:
                     with self.lock:
                         pending = self.pending.pop(call_id, None)
                     if pending:
-                        pending["calling_loop"].call_soon_threadsafe(
-                            pending["future"].set_exception, RuntimeError(str(exc)))
+                        calling_loop = pending["calling_loop"]
+                        if not calling_loop.is_closed():
+                            try:
+                                calling_loop.call_soon_threadsafe(
+                                    pending["future"].set_exception, RuntimeError(str(exc)))
+                            except RuntimeError:
+                                pass  # Loop closed between check and call
                     raise
 
             elif typed_item["kind"] == "callback":
@@ -619,18 +1158,23 @@ class AsyncRPC:
                     kwargs=_prepare_for_rpc(serialized_kwargs),
                 )
                 try:
-                    self.send_queue.put(request_msg)
+                    self._transport.send(request_msg)
                 except Exception as exc:
                     with self.lock:
                         pending = self.pending.pop(call_id, None)
                     if pending:
-                        pending["calling_loop"].call_soon_threadsafe(
-                            pending["future"].set_exception, RuntimeError(str(exc)))
+                        calling_loop = pending["calling_loop"]
+                        if not calling_loop.is_closed():
+                            try:
+                                calling_loop.call_soon_threadsafe(
+                                    pending["future"].set_exception, RuntimeError(str(exc)))
+                            except RuntimeError:
+                                pass  # Loop closed between check and call
                     raise
 
             elif typed_item["kind"] == "response":
                 response_msg: RPCMessage = _prepare_for_rpc(typed_item)
-                self.send_queue.put(response_msg)
+                self._transport.send(response_msg)
 
 
 class SingletonMetaclass(type):

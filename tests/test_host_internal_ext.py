@@ -112,7 +112,48 @@ def test_initialize_process_cuda_ipc_unavailable_raises(monkeypatch, tmp_path):
 
 def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
     ext = DummyExtension(tmp_path, {"share_torch": True, "share_cuda_ipc": False})
-    monkeypatch.setattr(host, "AsyncRPC", lambda recv_queue, send_queue: DummyRPC())
+    monkeypatch.setattr(host, "AsyncRPC", lambda recv_queue=None, send_queue=None, transport=None: DummyRPC())
+
+    # Mock subprocess.Popen
+    class MockPopen:
+        def __init__(self, cmd, **kwargs):
+            self.args = cmd
+            self.env = kwargs.get("env", {})
+            self.returncode = None
+        def poll(self): return None
+        def terminate(self): pass
+        def kill(self): pass
+        def wait(self, timeout=None): return 0
+
+    monkeypatch.setattr(host.subprocess, "Popen", MockPopen)
+
+    # Mock socket for UDS listener
+    class MockSocket:
+        def __init__(self, *args, **kwargs): pass
+        def bind(self, path): pass
+        def listen(self, backlog): pass
+        def accept(self): return (MockSocket(), "addr")
+        def close(self): pass
+        def sendall(self, data): pass
+        def recv(self, n): return b""
+        def shutdown(self, how): pass
+
+    monkeypatch.setattr(host.socket, "socket", MockSocket)
+    monkeypatch.setattr(host.socket, "AF_UNIX", 1)
+    monkeypatch.setattr(host.socket, "SOCK_STREAM", 1)
+
+    # Mock os.chmod
+    monkeypatch.setattr(host.os, "chmod", lambda path, mode: None)
+
+    # Mock JSONSocketTransport
+    class MockTransport:
+        def __init__(self, sock): pass
+        def send(self, data): pass
+        def recv(self): return {}
+        def close(self): pass
+
+    monkeypatch.setattr(host, "JSONSocketTransport", MockTransport)
+
     ext._initialize_process()
     assert os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "0"
     assert isinstance(ext.rpc, DummyRPC)

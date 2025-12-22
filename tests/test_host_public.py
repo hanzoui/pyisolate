@@ -22,9 +22,11 @@ class FakeExtension:
         self.proxy_obj = types.SimpleNamespace(run=lambda: "ok")
         self.rpc = object()
         self.stopped = 0
+        self._process_initialized = False
 
     def ensure_process_started(self) -> None:
         self.started += 1
+        self._process_initialized = True
 
     def get_proxy(self):
         return self.proxy_obj

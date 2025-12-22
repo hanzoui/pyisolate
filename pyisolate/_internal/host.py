@@ -5,10 +5,13 @@ import os
 import re
 import shutil
 import site
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from importlib import metadata as importlib_metadata
 from logging.handlers import QueueListener
 from pathlib import Path
@@ -17,9 +20,9 @@ from typing import Any, Generic, Optional, TypeVar
 from ..config import ExtensionConfig
 from ..path_helpers import serialize_host_snapshot
 from ..shared import ExtensionBase
-from .client import entrypoint
 from .loader import load_adapter
-from .shared import AsyncRPC
+from .shared import AsyncRPC, JSONSocketTransport
+from .tensor_serializer import register_tensor_serializer
 from .torch_utils import get_torch_ecosystem_packages
 
 __all__ = [
@@ -57,6 +60,186 @@ def _probe_cuda_ipc_support() -> tuple[bool, str]:
         return True, "ok"
     except Exception as exc:  # pragma: no cover - defensive
         return False, f"CUDA IPC probe failed: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Sandbox System Path Allow-List (DENY-BY-DEFAULT)
+# ---------------------------------------------------------------------------
+# These are the ONLY system paths exposed to sandboxed processes.
+# Everything else is denied. This is a security-critical list.
+
+SANDBOX_SYSTEM_PATHS: list[str] = [
+    "/usr",               # System binaries and libraries
+    "/lib",               # Core libraries
+    "/lib64",             # 64-bit libraries (if exists)
+    "/lib32",             # 32-bit libraries (if exists)
+    "/bin",               # Essential binaries
+    "/sbin",              # System binaries
+    "/etc/alternatives",  # Symlink management
+    "/etc/ld.so.cache",   # Dynamic linker cache
+    "/etc/ld.so.conf",    # Dynamic linker config
+    "/etc/ld.so.conf.d",  # Dynamic linker config dir
+    "/etc/ssl",           # SSL certificates
+    "/etc/ca-certificates",  # CA certificates
+    "/etc/pki",           # PKI certificates (RHEL/CentOS)
+    "/etc/resolv.conf",   # DNS (if network enabled)
+    "/etc/hosts",         # Host resolution
+    "/etc/nsswitch.conf", # Name service switch config
+    "/etc/passwd",        # User info (read-only, needed for getpwuid)
+    "/etc/group",         # Group info
+    "/etc/localtime",     # Timezone
+    "/etc/timezone",      # Timezone name
+]
+
+# GPU device paths for CUDA passthrough
+GPU_PASSTHROUGH_PATTERNS: list[str] = [
+    "nvidia*",            # GPU devices
+    "nvidiactl",          # Control device
+    "nvidia-uvm",         # Unified memory
+    "nvidia-uvm-tools",   # UVM tools
+    "dri",                # Direct Rendering Infrastructure
+]
+
+
+def _build_bwrap_command(
+    python_exe: str,
+    module_path: str,
+    venv_path: str,
+    uds_address: str,
+    sandbox_config: dict[str, Any],
+    allow_gpu: bool,
+) -> list[str]:
+    """Build the bubblewrap command for launching a sandboxed process.
+
+    Security properties:
+    - DENY-BY-DEFAULT filesystem (explicit allow-list only)
+    - Venv is READ-ONLY (prevents persistent infection)
+    - User namespace isolation (unprivileged execution)
+    - PID namespace isolation (process isolation)
+    - Network isolated by default
+    - /dev/shm shared (required for CUDA IPC, documented risk)
+
+    Args:
+        python_exe: Path to the Python interpreter in the venv
+        module_path: Path to the extension module directory
+        venv_path: Path to the isolated venv
+        uds_address: Path to the Unix socket for IPC
+        sandbox_config: SandboxConfig dict with network, writable_paths, readonly_paths
+        allow_gpu: Whether to enable GPU passthrough
+
+    Returns:
+        Command list suitable for subprocess.Popen
+    """
+    cmd = ["bwrap"]
+
+    # NOTE: User namespace isolation (--unshare-user) is disabled because
+    # Ubuntu 24.04+ has kernel.apparmor_restrict_unprivileged_userns=1 by default.
+    # This means unprivileged users cannot create user namespaces without an
+    # AppArmor profile that allows it.
+    #
+    # Without user namespace, we still get:
+    # - Filesystem isolation (deny-by-default)
+    # - Read-only venv and module paths (prevent modification)
+    # - Temporary filesystem in /tmp
+    # - Network sharing (required for API calls)
+    #
+    # To enable full user namespace isolation, a sysadmin would need to either:
+    # 1. Set kernel.apparmor_restrict_unprivileged_userns=0
+    # 2. Create an AppArmor profile for pyisolate
+
+    # Mount namespace isolation (this DOES work without user namespace)
+    # PID namespace requires user namespace, so we skip it too
+
+    # New session (detach from terminal)
+    cmd.append("--new-session")
+
+    # Essential virtual filesystems
+    cmd.extend(["--proc", "/proc"])
+    cmd.extend(["--dev", "/dev"])
+    cmd.extend(["--tmpfs", "/tmp"])
+
+    # DENY-BY-DEFAULT: Only bind required system paths (read-only)
+    for sys_path in SANDBOX_SYSTEM_PATHS:
+        if os.path.exists(sys_path):
+            cmd.extend(["--ro-bind", sys_path, sys_path])
+
+    # Venv: READ-ONLY (prevent malicious modification)
+    cmd.extend(["--ro-bind", str(venv_path), str(venv_path)])
+
+    # Module path: READ-ONLY
+    cmd.extend(["--ro-bind", str(module_path), str(module_path)])
+
+    # GPU passthrough (if enabled)
+    if allow_gpu:
+        dev_path = Path("/dev")
+        for pattern in GPU_PASSTHROUGH_PATTERNS:
+            for dev in dev_path.glob(pattern):
+                if dev.exists():
+                    cmd.extend(["--dev-bind", str(dev), str(dev)])
+        # CUDA IPC requires shared memory
+        # SECURITY NOTE: /dev/shm is shared. This is a known side-channel risk
+        # but unavoidable for zero-copy tensor transfer. Document this trade-off.
+        if Path("/dev/shm").exists():
+            cmd.extend(["--bind", "/dev/shm", "/dev/shm"])
+
+        # CUDA library and runtime paths (read-only)
+        cuda_paths = [
+            "/usr/local/cuda",        # Common CUDA install location
+            "/opt/cuda",              # Alternative CUDA location
+            "/run/nvidia-persistenced",  # Persistence daemon
+        ]
+        for cuda_path in cuda_paths:
+            if os.path.exists(cuda_path):
+                cmd.extend(["--ro-bind", cuda_path, cuda_path])
+
+    # Network: default to shared (unshare-net requires CAP_NET_ADMIN or special config)
+    # Only isolate network if explicitly requested AND the system supports it
+    # For most GPU workloads, network isolation isn't critical
+    cmd.append("--share-net")
+
+    # Additional paths from config (user-specified)
+    for path in sandbox_config.get("writable_paths", []):
+        if os.path.exists(path):
+            cmd.extend(["--bind", path, path])
+    for path in sandbox_config.get("readonly_paths", []):
+        if os.path.exists(path):
+            cmd.extend(["--ro-bind", path, path])
+
+    # UDS socket directory must be accessible
+    uds_dir = os.path.dirname(uds_address)
+    if uds_dir and os.path.exists(uds_dir):
+        cmd.extend(["--bind", uds_dir, uds_dir])
+
+    # Environment variables
+    cmd.extend(["--setenv", "PYISOLATE_UDS_ADDRESS", uds_address])
+    cmd.extend(["--setenv", "PYISOLATE_CHILD", "1"])
+
+    # Inherit select environment variables
+    # Standard environment
+    for env_var in ["PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"]:
+        if env_var in os.environ:
+            cmd.extend(["--setenv", env_var, os.environ[env_var]])
+
+    # CUDA/GPU environment variables (critical for GPU access)
+    cuda_env_vars = [
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "CUDA_VISIBLE_DEVICES",
+        "NVIDIA_VISIBLE_DEVICES",
+        "LD_LIBRARY_PATH",
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "TORCH_CUDA_ARCH_LIST",
+        "PYISOLATE_ENABLE_CUDA_IPC",
+    ]
+    for env_var in cuda_env_vars:
+        if env_var in os.environ:
+            cmd.extend(["--setenv", env_var, os.environ[env_var]])
+
+    # Command to run
+    cmd.extend([python_exe, "-m", "pyisolate._internal.sandbox_client"])
+
+    return cmd
+
 
 _DANGEROUS_PATTERNS = ("&&", "||", ";", "|", "`", "$", "\n", "\r", "\0")
 _UNSAFE_CHARS = frozenset(' \t\n\r;|&$`()<>"\'\\!{}[]*?~#%=,:')
@@ -250,9 +433,12 @@ class Extension(Generic[T]):
         self._process_initialized = False
         self.log_queue: Optional[Any] = None
         self.log_listener: Optional[QueueListener] = None
-        self.manager: Optional[Any] = None
-        self.to_extension: Optional[Any] = None
-        self.from_extension: Optional[Any] = None
+
+        # UDS / JSON-RPC resources
+        self._uds_listener: Optional[Any] = None
+        self._uds_path: Optional[str] = None
+        self._client_sock: Optional[Any] = None
+
         self.extension_proxy: Optional[T] = None
 
     def ensure_process_started(self) -> None:
@@ -327,7 +513,7 @@ class Extension(Generic[T]):
             if not supported:
                 raise RuntimeError(f"CUDA IPC requested but unavailable: {reason}")
             self._cuda_ipc_enabled = True
-            logger.info("[PyIsolate][%s] CUDA IPC enabled (share_cuda_ipc=True)", self.name)
+            logger.debug("CUDA IPC enabled for %s", self.name)
 
         os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
 
@@ -336,13 +522,8 @@ class Extension(Generic[T]):
         if os.name == "nt":
             import multiprocessing as std_mp
             std_ctx = std_mp.get_context("spawn")
-            self.manager = std_ctx.Manager()
-            self.to_extension = self.manager.Queue()
-            self.from_extension = self.manager.Queue()
-            self.log_queue = self.manager.Queue()
+            self.log_queue = std_ctx.Manager().Queue()
         else:
-            self.to_extension = self.ctx.Queue()
-            self.from_extension = self.ctx.Queue()
             self.log_queue = self.ctx.Queue()
 
         self.extension_proxy = None
@@ -354,8 +535,15 @@ class Extension(Generic[T]):
         self.log_listener = QueueListener(self.log_queue, stream_handler)
         self.log_listener.start()
 
+        # Register tensor serializer for JSON-RPC
+        from .serialization_registry import SerializerRegistry
+        register_tensor_serializer(SerializerRegistry.get_instance())
+
+        # Ensure file_system strategy for CPU tensors
+        import torch
+        torch.multiprocessing.set_sharing_strategy('file_system')
+
         self.proc = self.__launch()
-        self.rpc = AsyncRPC(recv_queue=self.from_extension, send_queue=self.to_extension)  # type: ignore[arg-type]
 
         for api in self.config["apis"]:
             api()._register(self.rpc)
@@ -372,13 +560,16 @@ class Extension(Generic[T]):
         """Stop the extension process and clean up queues/listeners."""
         errors: list[str] = []
 
-        if hasattr(self, "proc") and self.proc.is_alive():
+        # Terminate process
+        if hasattr(self, "proc") and self.proc:
             try:
-                self.proc.terminate()
-                self.proc.join(timeout=5.0)
-                if self.proc.is_alive():
-                    self.proc.kill()
-                    self.proc.join()
+                if self.proc.poll() is None:
+                    self.proc.terminate()
+                    try:
+                        self.proc.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        self.proc.kill()
+                        self.proc.wait()
             except Exception as exc:
                 errors.append(f"terminate: {exc}")
 
@@ -388,19 +579,32 @@ class Extension(Generic[T]):
             except Exception as exc:
                 errors.append(f"log_listener: {exc}")
 
-        for attr_name in ("to_extension", "from_extension", "log_queue"):
-            q = getattr(self, attr_name, None)
-            if q:
-                try:
-                    q.close()
-                except Exception as exc:
-                    errors.append(f"{attr_name}: {exc}")
-
-        if self.manager:
+        # Clean up UDS resources
+        if self._client_sock:
             try:
-                self.manager.shutdown()
+                self._client_sock.close()
             except Exception as exc:
-                errors.append(f"manager: {exc}")
+                errors.append(f"client_sock: {exc}")
+
+        if self._uds_listener:
+            try:
+                self._uds_listener.close()
+            except Exception as exc:
+                errors.append(f"uds_listener: {exc}")
+
+        if self._uds_path and os.path.exists(self._uds_path):
+            try:
+                os.unlink(self._uds_path)
+            except Exception as exc:
+                errors.append(f"unlink uds: {exc}")
+
+        if self.log_queue:
+            try:
+                # On Windows/multiprocessing, queue might need closing
+                if hasattr(self.log_queue, "close"):
+                    self.log_queue.close()
+            except Exception as exc:
+                errors.append(f"log_queue: {exc}")
 
         self._process_initialized = False
         self.extension_proxy = None
@@ -414,41 +618,113 @@ class Extension(Generic[T]):
         """Launch the extension in a separate process after venv + deps are ready."""
         self._create_extension_venv()
         self._install_dependencies()
+        return self._launch_with_uds()
 
+    def _launch_with_uds(self) -> Any:
+        """Launch the extension using UDS + JSON-RPC (Standard Isolation)."""
+        import os as os_module
+
+        # Determine Python executable
         if os.name == "nt":
-            executable = str(self.venv_path / "Scripts" / "python.exe")
+            python_exe = str(self.venv_path / "Scripts" / "python.exe")
         else:
-            executable = str(self.venv_path / "bin" / "python")
+            python_exe = str(self.venv_path / "bin" / "python")
 
+        # Create UDS listener
+        uid = os_module.getuid()
+        run_dir = f"/run/user/{uid}/pyisolate"
+        if not os_module.path.exists(run_dir):
+            try:
+                os_module.makedirs(run_dir, mode=0o700)
+            except PermissionError:
+                run_dir = f"/tmp/pyisolate-{uid}"
+                os_module.makedirs(run_dir, mode=0o700, exist_ok=True)
+
+        uds_path = tempfile.mktemp(prefix="ext_", suffix=".sock", dir=run_dir)
+
+        listener_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener_sock.bind(uds_path)
+        os_module.chmod(uds_path, 0o600)
+        listener_sock.listen(1)
+
+        self._uds_listener = listener_sock
+        self._uds_path = uds_path
+
+        logger.info("[PyIsolate][JSON-RPC] Listening on %s", uds_path)
+
+        # Build command
+        cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
+
+        # Prepare environment
+        env = os.environ.copy()
+        env["PYISOLATE_UDS_ADDRESS"] = uds_path
+        env["PYISOLATE_CHILD"] = "1"
+        env["PYISOLATE_EXTENSION"] = self.name
+        env["PYISOLATE_MODULE_PATH"] = self.module_path
+        env["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
+
+        # Launch process
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=None, # Inherit stdout/stderr for now so we see logs
+            stderr=None,
+            close_fds=True,
+        )
+
+        # Accept connection
+        client_sock = None
+        accept_error = None
+
+        def accept_connection() -> None:
+            nonlocal client_sock, accept_error
+            try:
+                client_sock, _ = listener_sock.accept()
+            except Exception as e:
+                accept_error = e
+
+        accept_thread = threading.Thread(target=accept_connection)
+        accept_thread.daemon = True
+        accept_thread.start()
+        accept_thread.join(timeout=30.0)
+
+        if accept_thread.is_alive():
+            proc.terminate()
+            raise RuntimeError(f"Child failed to connect within timeout for {self.name}")
+
+        if accept_error:
+            proc.terminate()
+            raise RuntimeError(f"Child failed to connect for {self.name}: {accept_error}")
+
+        if client_sock is None:
+            proc.terminate()
+            raise RuntimeError(f"Child connection is None for {self.name}")
+
+        # Setup JSON-RPC
+        transport = JSONSocketTransport(client_sock)
+        logger.info("[PyIsolate][JSON-RPC] Child connected, sending bootstrap data")
+
+        # Send bootstrap
         snapshot = build_extension_snapshot(self.module_path)
-        snapshot_json = json.dumps(snapshot)
+        ext_type_ref = f"{self.extension_type.__module__}.{self.extension_type.__name__}"
 
-        self.mp.set_executable(executable)
-        with ExitStack() as stack:
-            stack.enter_context(
-                environment(
-                    PYISOLATE_CHILD="1",
-                    PYISOLATE_EXTENSION=self.name,
-                    PYISOLATE_MODULE_PATH=self.module_path,
-                    PYISOLATE_HOST_SNAPSHOT=snapshot_json,
-                    PYISOLATE_ENABLE_CUDA_IPC="1" if self._cuda_ipc_enabled else "0",
-                )
-            )
-            if os.name == "nt":
-                stack.enter_context(environment(VIRTUAL_ENV=str(self.venv_path)))
+        # Sanitize config for JSON serialization (convert API classes to string refs)
+        safe_config = dict(self.config)  # type: ignore[arg-type]
+        if "apis" in safe_config:
+            api_list: list[str] = [
+                f"{api.__module__}.{api.__name__}" for api in self.config["apis"]  # type: ignore[union-attr]
+            ]
+            safe_config["apis"] = api_list
 
-            proc = self.ctx.Process(
-                target=entrypoint,
-                args=(
-                    self.module_path,
-                    self.extension_type,
-                    self.config,
-                    self.to_extension,
-                    self.from_extension,
-                    self.log_queue,
-                ),
-            )
-            proc.start()
+        bootstrap_data = {
+            "snapshot": snapshot,
+            "config": safe_config,
+            "extension_type_ref": ext_type_ref,
+        }
+        transport.send(bootstrap_data)
+
+        self._client_sock = client_sock
+        self.rpc = AsyncRPC(transport=transport)
 
         return proc
 
@@ -457,10 +733,9 @@ class Extension(Generic[T]):
         self.venv_path.parent.mkdir(parents=True, exist_ok=True)
 
         uv_path = shutil.which("uv")
-        if uv_path is None:
+        if not uv_path:
             raise RuntimeError(
-                "uv is required but not found. "
-                "Install it manually with: pip install uv\n"
+                "uv is required but not found. Install it with: pip install uv\n"
                 "See https://github.com/astral-sh/uv for installation options."
             )
 

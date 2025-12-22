@@ -62,7 +62,7 @@ class ExtensionManager(Generic[T]):
                 # Invalidate cached proxy if process was stopped and needs restart
                 if self._proxy is not None and not self._extension._process_initialized:
                     self._proxy = None
-                
+
                 if self._proxy is None:
                     if hasattr(self._extension, "ensure_process_started"):
                         self._extension.ensure_process_started()
