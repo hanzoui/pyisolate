@@ -297,7 +297,7 @@ class JSONSocketTransport:
         """Handle non-JSON types during serialization."""
         import traceback as tb_module
         from enum import Enum
-        from types import MethodType, FunctionType
+        from types import FunctionType, MethodType
 
         # Skip callables/methods - they can't be serialized and are typically not needed
         if isinstance(obj, (MethodType, FunctionType)) or callable(obj) and not isinstance(obj, type):
@@ -326,7 +326,9 @@ class JSONSocketTransport:
                 'type': type(obj).__name__,
                 'module': type(obj).__module__,
                 'name': obj.name,
-                'value': obj.value if isinstance(obj.value, (int, str, float, bool, type(None))) else str(obj.value)
+                'value': obj.value if isinstance(
+                    obj.value, (int, str, float, bool, type(None))
+                ) else str(obj.value)
             }
 
         # Handle bytes (common in some contexts)
@@ -356,7 +358,7 @@ class JSONSocketTransport:
             try:
                 # Recursively serialize __dict__ contents AND class attributes
                 serialized_dict = {}
-                
+
                 # First, collect JSON-serializable class attributes (not methods/descriptors)
                 for klass in type(obj).__mro__:
                     if klass is object:
@@ -365,10 +367,9 @@ class JSONSocketTransport:
                         if k.startswith('_'):
                             continue
                         # Only include primitive types as class attributes
-                        if isinstance(v, (int, float, str, bool, type(None))):
-                            if k not in serialized_dict:  # instance attrs take priority
-                                serialized_dict[k] = v
-                
+                        if isinstance(v, (int, float, str, bool, type(None))) and k not in serialized_dict:
+                            serialized_dict[k] = v
+
                 # Then add instance attributes (which override class attrs)
                 for k, v in obj.__dict__.items():
                     # Skip private attributes and methods/callables
@@ -458,7 +459,7 @@ class JSONSocketTransport:
             data = dct.get('data', {})
             module_name = dct.get('module')
             type_name = dct.get('type')
-            
+
             # Try to reconstruct the original class
             if module_name and type_name:
                 try:
@@ -490,7 +491,7 @@ class JSONSocketTransport:
                             pass
                 except Exception:
                     pass
-            
+
             # Fallback: return SimpleNamespace with metadata
             ns = SimpleNamespace(**data)
             ns.__pyisolate_type__ = type_name
@@ -502,10 +503,8 @@ class JSONSocketTransport:
     def close(self) -> None:
         """Close the socket connection."""
         with contextlib.suppress(Exception):
-            try:
-                self._sock.shutdown(2)  # SHUT_RDWR
-            except Exception:
-                pass
+            self._sock.shutdown(2)  # SHUT_RDWR
+        with contextlib.suppress(Exception):
             self._sock.close()
 
 
@@ -780,10 +779,10 @@ class AsyncRPC:
     def update_event_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """
         Update the default event loop used by this RPC instance.
-        
+
         Call this method when the event loop changes (e.g., between ComfyUI workflows)
         to ensure RPC calls are scheduled on the correct loop.
-        
+
         Args:
             loop: The new event loop to use. If None, uses asyncio.get_event_loop().
         """
@@ -949,25 +948,27 @@ class AsyncRPC:
                     f"original error: {serialize_exc}, fallback error: {fallback_exc}"
                 ) from serialize_exc
 
-    def _get_valid_loop(self, preferred_loop: asyncio.AbstractEventLoop | None = None) -> asyncio.AbstractEventLoop:
+    def _get_valid_loop(
+        self, preferred_loop: asyncio.AbstractEventLoop | None = None
+    ) -> asyncio.AbstractEventLoop:
         """
         Get a valid (non-closed) event loop for RPC operations.
-        
+
         This handles the case where the original loop has been closed
         (e.g., between ComfyUI workflows) and we need to use the current loop.
-        
+
         The preferred_loop is typically the cached self.default_loop. If it's closed,
         this method will:
         1. Check if self.default_loop has been updated (via update_event_loop())
         2. Try to get the running loop (if called from async context)
         3. Return None if no valid loop is available (caller must handle)
-        
+
         Args:
             preferred_loop: The loop we'd prefer to use if it's still valid
-            
+
         Returns:
             A valid, non-closed event loop
-            
+
         Raises:
             RuntimeError: If no valid event loop is available
         """
@@ -1135,11 +1136,9 @@ class AsyncRPC:
                     if pending:
                         calling_loop = pending["calling_loop"]
                         if not calling_loop.is_closed():
-                            try:
+                            with contextlib.suppress(RuntimeError):
                                 calling_loop.call_soon_threadsafe(
                                     pending["future"].set_exception, RuntimeError(str(exc)))
-                            except RuntimeError:
-                                pass  # Loop closed between check and call
                     raise
 
             elif typed_item["kind"] == "callback":
@@ -1165,11 +1164,9 @@ class AsyncRPC:
                     if pending:
                         calling_loop = pending["calling_loop"]
                         if not calling_loop.is_closed():
-                            try:
+                            with contextlib.suppress(RuntimeError):
                                 calling_loop.call_soon_threadsafe(
                                     pending["future"].set_exception, RuntimeError(str(exc)))
-                            except RuntimeError:
-                                pass  # Loop closed between check and call
                     raise
 
             elif typed_item["kind"] == "response":

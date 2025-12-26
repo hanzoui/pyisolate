@@ -517,7 +517,8 @@ class Extension(Generic[T]):
 
         os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
 
-        os.environ["PYISOLATE_CHILD"] = "1"
+        # NOTE: PYISOLATE_CHILD is set in the child's env dict, NOT in os.environ
+        # Setting it in os.environ would affect the HOST process serialization logic
 
         if os.name == "nt":
             import multiprocessing as std_mp

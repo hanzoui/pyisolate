@@ -84,7 +84,10 @@ def main() -> None:
         else:
             extension_type = ExtensionBase
     except Exception as e:
-        logger.warning("[PyIsolate][JSON-RPC] Could not resolve extension type %s: %s, using ExtensionBase", ext_type_ref, e)
+        logger.warning(
+            "[PyIsolate][JSON-RPC] Could not resolve extension type %s: %s",
+            ext_type_ref, e
+        )
         extension_type = ExtensionBase
 
     # 9. Run the async entrypoint

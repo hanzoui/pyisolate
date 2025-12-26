@@ -101,7 +101,13 @@ select = [
     "PIE",  # flake8-pie
     "SIM",  # flake8-simplify
 ]
-ignore = ["T201", "S101"]  # Allow print statements and assert statements
+# T201: print statements allowed
+# S101: assert allowed
+# S108: /tmp usage is intentional for IPC sockets
+# S110: try-except-pass for graceful degradation in serialization
+# S306: mktemp used for UDS socket paths (race-safe via bind)
+# S603: subprocess.Popen required for child process spawning
+ignore = ["T201", "S101", "S108", "S110", "S306", "S603"]
 
 [tool.ruff.format]
 quote-style = "double"

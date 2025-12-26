@@ -1,18 +1,18 @@
 import base64
-from typing import Any, Dict
+from typing import Any
 
 import torch
 import torch.multiprocessing.reductions as reductions
 
 
-def serialize_tensor(t: torch.Tensor) -> Dict[str, Any]:
+def serialize_tensor(t: torch.Tensor) -> dict[str, Any]:
     """Serialize a tensor to JSON-compatible format using shared memory."""
     if t.is_cuda:
         return _serialize_cuda_tensor(t)
     return _serialize_cpu_tensor(t)
 
 
-def _serialize_cpu_tensor(t: torch.Tensor) -> Dict[str, Any]:
+def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
     """Serialize CPU tensor using file_system shared memory strategy."""
     if not t.is_shared():
         t.share_memory_()
@@ -45,7 +45,7 @@ def _serialize_cpu_tensor(t: torch.Tensor) -> Dict[str, Any]:
         raise RuntimeError(f"Unsupported storage reduction: {sfunc.__name__}")
 
 
-def _serialize_cuda_tensor(t: torch.Tensor) -> Dict[str, Any]:
+def _serialize_cuda_tensor(t: torch.Tensor) -> dict[str, Any]:
     """Serialize CUDA tensor using CUDA IPC."""
     try:
         func, args = reductions.reduce_tensor(t)
@@ -57,7 +57,7 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> Dict[str, Any]:
             tensor_size_mb = t.numel() * t.element_size() / (1024 * 1024)
             import logging
             logger = logging.getLogger(__name__)
-            
+
             if tensor_size_mb > 100:  # 100MB threshold
                 logger.warning(
                     "PERFORMANCE: Cloning large CUDA tensor (%.1fMB) received from another process. "
@@ -69,7 +69,7 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> Dict[str, Any]:
                     "Cloning CUDA tensor (%.2fMB) received from another process",
                     tensor_size_mb
                 )
-            
+
             t = t.clone()
             func, args = reductions.reduce_tensor(t)
         else:
@@ -96,7 +96,7 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> Dict[str, Any]:
     }
 
 
-def deserialize_tensor(data: Dict[str, Any]) -> torch.Tensor:
+def deserialize_tensor(data: dict[str, Any]) -> torch.Tensor:
     """Deserialize a tensor from TensorRef format."""
     # If this is already a tensor (e.g., passed through by shared memory), return as-is
     if isinstance(data, torch.Tensor):
@@ -114,7 +114,7 @@ def _convert_lists_to_tuples(obj: Any) -> Any:
     return obj
 
 
-def _deserialize_legacy_tensor(data: Dict[str, Any]) -> torch.Tensor:
+def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
     """Handle legacy TensorRef format for backward compatibility."""
     device = data["device"]
     dtype_str = data["dtype"]

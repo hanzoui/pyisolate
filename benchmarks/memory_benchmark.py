@@ -47,9 +47,9 @@ import contextlib
 
 from memory_extension_base import MemoryBenchmarkExtensionBase
 from tabulate import tabulate
+from tests.test_integration import IntegrationTestBase
 
 from pyisolate import ExtensionConfig, ExtensionManager, ExtensionManagerConfig
-from tests.test_integration import IntegrationTestBase
 
 
 class MemoryTracker:
