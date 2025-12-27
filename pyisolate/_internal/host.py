@@ -422,6 +422,20 @@ class Extension(Generic[T]):
         self.extension_type = extension_type
         self._cuda_ipc_enabled = False
 
+        # Auto-populate APIs from adapter if not already in config
+        if "apis" not in self.config:
+            try:
+                adapter = load_adapter()
+                if adapter:
+                    rpc_services = adapter.provide_rpc_services()
+                    self.config["apis"] = rpc_services
+                    logger.info("[Extension] Auto-populated %d RPC services from adapter", len(rpc_services))
+                else:
+                    self.config["apis"] = []
+            except Exception as exc:
+                logger.warning("[Extension] Could not load adapter RPC services: %s", exc)
+                self.config["apis"] = []
+
         self.mp: Any
         if self.config["share_torch"]:
             import torch.multiprocessing

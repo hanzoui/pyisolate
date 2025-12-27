@@ -182,7 +182,13 @@ async def _async_uds_entrypoint(
             api.use_remote(rpc)
             if adapter:
                 api_instance = cast(ProxiedSingleton, getattr(api, "instance", api))
+                logger.info("[UDS] Calling handle_api_registration for %s", api_instance.__class__.__name__)
                 adapter.handle_api_registration(api_instance, rpc)
+                # Verify UtilsProxy specifically
+                if api_instance.__class__.__name__ == "UtilsProxy":
+                    import comfy.utils
+                    logger.info("[UDS] After UtilsProxy registration: PROGRESS_BAR_HOOK = %s", 
+                               comfy.utils.PROGRESS_BAR_HOOK)
 
         # Import and load the extension module
         import importlib.util
@@ -195,9 +201,23 @@ async def _async_uds_entrypoint(
         assert module_spec.loader is not None
 
         try:
+            # Check PROGRESS_BAR_HOOK before module load
+            try:
+                import comfy.utils
+                logger.info("[UDS] BEFORE module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
+            except Exception:
+                pass
+            
             module = importlib.util.module_from_spec(module_spec)
             sys.modules[sys_module_name] = module
             module_spec.loader.exec_module(module)
+            
+            # Check PROGRESS_BAR_HOOK after module load
+            try:
+                import comfy.utils
+                logger.info("[UDS] AFTER module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
+            except Exception:
+                pass
 
             rpc.run()
             await extension.on_module_loaded(module)
