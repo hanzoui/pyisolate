@@ -36,7 +36,7 @@ class SerializerRegistry:
     ) -> None:
         """Register serializer (and optional deserializer) for a type."""
         if type_name in self._serializers:
-            logger.warning("Overwriting existing serializer for %s", type_name)
+            logger.debug("Overwriting existing serializer for %s", type_name)
 
         self._serializers[type_name] = serializer
         if deserializer:
