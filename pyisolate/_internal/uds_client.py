@@ -187,7 +187,7 @@ async def _async_uds_entrypoint(
                 # Verify UtilsProxy specifically
                 if api_instance.__class__.__name__ == "UtilsProxy":
                     import comfy.utils
-                    logger.info("[UDS] After UtilsProxy registration: PROGRESS_BAR_HOOK = %s", 
+                    logger.info("[UDS] After UtilsProxy registration: PROGRESS_BAR_HOOK = %s",
                                comfy.utils.PROGRESS_BAR_HOOK)
 
         # Import and load the extension module
@@ -207,11 +207,11 @@ async def _async_uds_entrypoint(
                 logger.info("[UDS] BEFORE module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
             except Exception:
                 pass
-            
+
             module = importlib.util.module_from_spec(module_spec)
             sys.modules[sys_module_name] = module
             module_spec.loader.exec_module(module)
-            
+
             # Check PROGRESS_BAR_HOOK after module load
             try:
                 import comfy.utils

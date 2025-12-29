@@ -88,7 +88,7 @@ class CallableProxy:
         self._metadata = metadata
         self._name = metadata.get("name", "<remote_callable>")
         self._type_name = metadata.get("type", "Callable")
-        
+
         # Reconstruct signature if available
         sig_data = metadata.get("signature")
         if sig_data:
@@ -96,12 +96,12 @@ class CallableProxy:
             for param_data in sig_data:
                 # param_data is (name, kind_value, has_default)
                 name, kind_val, has_default = param_data
-                
+
                 # generic default value if original had one (we don't serialize actual defaults)
-                default = inspect.Parameter.empty
+                default: str | object = inspect.Parameter.empty
                 if has_default:
                    default = "<remote_default>"
-                
+
                 # Map integer kind back to enum safely
                 # _ParameterKind enum values are standard:
                 # POSITIONAL_ONLY = 0
@@ -109,7 +109,7 @@ class CallableProxy:
                 # VAR_POSITIONAL = 2
                 # KEYWORD_ONLY = 3
                 # VAR_KEYWORD = 4
-                
+
                 kind_map = {
                     0: inspect.Parameter.POSITIONAL_ONLY,
                     1: inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -118,13 +118,13 @@ class CallableProxy:
                     4: inspect.Parameter.VAR_KEYWORD
                 }
                 kind = kind_map.get(kind_val, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-                
+
                 parameters.append(inspect.Parameter(
                     name=name,
                     kind=kind,
                     default=default
                 ))
-                
+
             self.__signature__ = inspect.Signature(parameters=parameters)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -568,9 +568,9 @@ class JSONSocketTransport:
                         try:
                             obj = cls()
                             for k, v in data.items():
-                                set_attr = getattr(obj, k, None)
                                 # Check if it's a property without a setter
-                                if isinstance(getattr(type(obj), k, None), property) and getattr(type(obj), k).fset is None:
+                                prop = getattr(type(obj), k, None)
+                                if isinstance(prop, property) and prop.fset is None:
                                    continue
                                 setattr(obj, k, v)
                             return obj
@@ -592,7 +592,7 @@ class JSONSocketTransport:
             ns.__pyisolate_type__ = type_name
             ns.__pyisolate_module__ = module_name
             return ns
-        
+
         # Reconstruct Callables
         if dct.get('__pyisolate_callable__'):
             return CallableProxy(dct)
@@ -879,7 +879,7 @@ class AsyncRPC:
         """
         Update the default event loop used by this RPC instance.
 
-        Call this method when the event loop changes to ensure RPC calls are 
+        Call this method when the event loop changes to ensure RPC calls are
         scheduled on the correct loop.
 
         Args:

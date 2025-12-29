@@ -18,7 +18,7 @@ def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
         t.share_memory_()
 
     # Get storage reduction
-    storage = t.storage()
+    storage = t.untyped_storage()
     sfunc, sargs = reductions.reduce_storage(storage)
 
     if sfunc.__name__ == 'rebuild_storage_filename':
