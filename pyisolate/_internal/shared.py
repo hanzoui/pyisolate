@@ -497,6 +497,21 @@ class JSONSocketTransport:
             import base64
             return base64.b64decode(dct['data'])
 
+        # Generic Registry Lookup for __type__
+        if '__type__' in dct:
+            type_name = dct['__type__']
+            # Skip TensorRef here as it has special handling below (or generic can handle it if registered)
+            if type_name != 'TensorRef':
+                from .serialization_registry import SerializerRegistry
+                registry = SerializerRegistry.get_instance()
+                deserializer = registry.get_deserializer(type_name)
+                if deserializer:
+                    try:
+                        return deserializer(dct)
+                    except Exception as e:
+                        # Log error but don't crash - return dict as fallback
+                        logger.warning(f"Failed to deserialize {type_name}: {e}")
+
         # Handle TensorRef - deserialize tensors during JSON parsing
         if dct.get('__type__') == 'TensorRef':
             from .serialization_registry import SerializerRegistry
