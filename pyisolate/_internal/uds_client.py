@@ -43,7 +43,7 @@ def main() -> None:
         )
 
     # 2. Connect to host via UDS (raw socket for JSON-RPC)
-    logger.info("[PyIsolate][JSON-RPC] Connecting to host at %s", uds_address)
+    logger.debug("Connecting to host at %s", uds_address)
     client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client_sock.connect(uds_address)
 
@@ -53,7 +53,7 @@ def main() -> None:
 
     # 4. Receive bootstrap data from host via JSON
     bootstrap_data = transport.recv()
-    logger.info("[PyIsolate][JSON-RPC] Received bootstrap data")
+    logger.debug("Received bootstrap data")
 
     # 5. Apply host snapshot to environment
     snapshot = bootstrap_data.get("snapshot", {})
@@ -85,7 +85,7 @@ def main() -> None:
             extension_type = ExtensionBase
     except Exception as e:
         logger.warning(
-            "[PyIsolate][JSON-RPC] Could not resolve extension type %s: %s",
+            "Could not resolve extension type %s: %s",
             ext_type_ref, e
         )
         extension_type = ExtensionBase

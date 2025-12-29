@@ -314,7 +314,7 @@ class JSONSocketTransport:
         except TypeError as e:
             type_name = type(obj).__name__
             logger.error(
-                "📚 [PyIsolate][JSON-RPC] Cannot serialize object:\n"
+                "Cannot serialize object:\n"
                 "  Type: %s\n"
                 "  Error: %s\n"
                 "  Resolution: Register a custom serializer via SerializerRegistry",
@@ -469,7 +469,7 @@ class JSONSocketTransport:
                     'data': serialized_dict
                 }
             except Exception as e:
-                logger.warning("📚 [PyIsolate][JSON-RPC] Failed to serialize __dict__ of %s: %s",
+                logger.warning("Failed to serialize __dict__ of %s: %s",
                              type(obj).__name__, e)
 
         # Fail loudly for non-serializable types

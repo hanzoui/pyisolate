@@ -717,7 +717,7 @@ class Extension(Generic[T]):
 
         # Setup JSON-RPC
         transport = JSONSocketTransport(client_sock)
-        logger.info("[PyIsolate][JSON-RPC] Child connected, sending bootstrap data")
+        logger.debug("Child connected, sending bootstrap data")
 
         # Send bootstrap
         snapshot = build_extension_snapshot(self.module_path)
