@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Main entry point for isolated child processes."""
+    # Configure logging format to match host
+    logging.basicConfig(
+        format='%(message)s',
+        level=logging.INFO,
+        force=True
+    )
+    
     # 1. Get UDS address from environment
     uds_address = os.environ.get("PYISOLATE_UDS_ADDRESS")
     if not uds_address:
@@ -182,12 +189,12 @@ async def _async_uds_entrypoint(
             api.use_remote(rpc)
             if adapter:
                 api_instance = cast(ProxiedSingleton, getattr(api, "instance", api))
-                logger.info("[UDS] Calling handle_api_registration for %s", api_instance.__class__.__name__)
+                logger.info("Calling handle_api_registration for %s", api_instance.__class__.__name__)
                 adapter.handle_api_registration(api_instance, rpc)
                 # Verify UtilsProxy specifically
                 if api_instance.__class__.__name__ == "UtilsProxy":
                     import comfy.utils
-                    logger.info("[UDS] After UtilsProxy registration: PROGRESS_BAR_HOOK = %s",
+                    logger.info("After UtilsProxy registration: PROGRESS_BAR_HOOK = %s",
                                comfy.utils.PROGRESS_BAR_HOOK)
 
         # Import and load the extension module
@@ -204,7 +211,7 @@ async def _async_uds_entrypoint(
             # Check PROGRESS_BAR_HOOK before module load
             try:
                 import comfy.utils
-                logger.info("[UDS] BEFORE module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
+                logger.info("BEFORE module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
             except Exception:
                 pass
 
@@ -215,7 +222,7 @@ async def _async_uds_entrypoint(
             # Check PROGRESS_BAR_HOOK after module load
             try:
                 import comfy.utils
-                logger.info("[UDS] AFTER module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
+                logger.info("AFTER module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
             except Exception:
                 pass
 

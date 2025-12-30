@@ -17,12 +17,11 @@ def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
     if not t.is_shared():
         t.share_memory_()
 
-    # Get storage reduction
     storage = t.untyped_storage()
     sfunc, sargs = reductions.reduce_storage(storage)
 
     if sfunc.__name__ == 'rebuild_storage_filename':
-        # sargs: (cls, manager_path, storage_key, size, dtype)
+        # sargs: (cls, manager_path, storage_key, size)
         return {
             "__type__": "TensorRef",
             "device": "cpu",
@@ -37,9 +36,9 @@ def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
             "requires_grad": t.requires_grad
         }
     elif sfunc.__name__ == 'rebuild_storage_fd':
-        # Need file_system strategy for JSON-RPC
+        # Force file_system strategy for JSON-RPC compatibility
         torch.multiprocessing.set_sharing_strategy('file_system')
-        t.share_memory_()  # Re-share with new strategy
+        t.share_memory_()
         return _serialize_cpu_tensor(t)
     else:
         raise RuntimeError(f"Unsupported storage reduction: {sfunc.__name__}")
@@ -128,19 +127,15 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
         storage_key = data["storage_key"].encode('utf-8')
         storage_size = data["storage_size"]
 
-        # Rebuild storage - may return TypedStorage or UntypedStorage depending on version
+        # Rebuild UntypedStorage (no dtype arg)
         rebuilt_storage = reductions.rebuild_storage_filename(
-            torch.storage.TypedStorage, manager_path, storage_key, storage_size, dtype
+            torch.UntypedStorage, manager_path, storage_key, storage_size
         )
 
-        # Ensure we have TypedStorage (needed by rebuild_tensor)
-        if isinstance(rebuilt_storage, torch.storage.TypedStorage):
-            typed_storage = rebuilt_storage
-        else:
-            # Wrap UntypedStorage in TypedStorage with dtype
-            typed_storage = torch.storage.TypedStorage(
-                wrap_storage=rebuilt_storage, dtype=dtype, _internal=True
-            )
+        # Wrap in TypedStorage (required by rebuild_tensor)
+        typed_storage = torch.storage.TypedStorage(
+            wrap_storage=rebuilt_storage, dtype=dtype, _internal=True
+        )
 
         # Rebuild tensor using new signature: (cls, storage, metadata)
         # metadata is (offset, size, stride, requires_grad)
