@@ -14,7 +14,6 @@ Environment variables expected:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
@@ -189,7 +188,7 @@ async def _async_uds_entrypoint(
             api.use_remote(rpc)
             if adapter:
                 api_instance = cast(ProxiedSingleton, getattr(api, "instance", api))
-                logger.info("Calling handle_api_registration for %s", api_instance.__class__.__name__)
+                logger.debug("Calling handle_api_registration for %s", api_instance.__class__.__name__)
                 adapter.handle_api_registration(api_instance, rpc)
 
         # Import and load the extension module

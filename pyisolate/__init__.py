@@ -32,9 +32,14 @@ Basic Usage:
     >>> asyncio.run(main())
 """
 
+from typing import TYPE_CHECKING
+
 from ._internal.rpc_protocol import ProxiedSingleton, local_execution
 from .config import ExtensionConfig, ExtensionManagerConfig
 from .host import ExtensionBase, ExtensionManager
+
+if TYPE_CHECKING:
+    from .interfaces import IsolationAdapter
 
 __version__ = "0.0.1"
 
@@ -49,12 +54,12 @@ __all__ = [
     "get_adapter",
 ]
 
-def register_adapter(adapter):
+def register_adapter(adapter: "IsolationAdapter") -> None:
     """Register an adapter instance for pyisolate to use."""
     from ._internal.adapter_registry import AdapterRegistry
     AdapterRegistry.register(adapter)
 
-def get_adapter():
+def get_adapter() -> "IsolationAdapter | None":
     """Get the registered adapter, or None if not registered."""
     from ._internal.adapter_registry import AdapterRegistry
     return AdapterRegistry.get()

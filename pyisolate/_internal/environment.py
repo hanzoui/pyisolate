@@ -125,12 +125,15 @@ def build_extension_snapshot(module_path: str) -> dict[str, object]:
             logger.warning("Adapter serializer registration failed: %s", exc)
 
     # v1.0: Serialize adapter reference for rehydration
-    adapter_ref: str | None = None
+    adapter_ref: Optional[str] = None  # noqa: UP045
     if adapter:
         cls = adapter.__class__
         # Constraint: Adapter class must be importable (not defined in __main__ or closure)
         if cls.__module__ == "__main__":
-             logger.warning("Adapter class %s is defined in __main__ and cannot be rehydrated in child", cls.__name__)
+             logger.warning(
+                 "Adapter class %s is defined in __main__ and cannot be rehydrated in child",
+                 cls.__name__
+             )
         else:
             adapter_ref = f"{cls.__module__}:{cls.__name__}"
 

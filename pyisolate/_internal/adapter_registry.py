@@ -9,12 +9,12 @@ from ..interfaces import IsolationAdapter
 class AdapterRegistry:
     """Singleton registry for the active isolation adapter."""
 
-    _instance: Optional[IsolationAdapter] = None
+    _instance: Optional[IsolationAdapter] = None  # noqa: UP045
 
     @classmethod
     def register(cls, adapter: IsolationAdapter) -> None:
         """Register adapter instance.
-        
+
         Raises:
             RuntimeError: If an adapter is already registered.
         """
@@ -29,7 +29,7 @@ class AdapterRegistry:
         cls._instance = adapter
 
     @classmethod
-    def get(cls) -> Optional[IsolationAdapter]:
+    def get(cls) -> IsolationAdapter | None:
         """Get registered adapter. Returns None if no adapter registered."""
         return cls._instance
 
