@@ -158,6 +158,7 @@ class AsyncRPC:
         self.callbacks: dict[str, Any] = {}
         self.blocking_future: asyncio.Future[Any] | None = None
         self.outbox: queue.Queue[RPCPendingRequest | None] = queue.Queue()
+        self._stopping: bool = False
 
     def update_event_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """
@@ -255,6 +256,18 @@ class AsyncRPC:
             "RPC event loop was never started or already stopped."
         )
         self.blocking_future.set_result(None)
+
+    def shutdown(self) -> None:
+        """Signal intent to stop RPC. Suppresses connection errors."""
+        self._stopping = True
+        # If we have a blocking future, we can try to set it to unblock run_until_stopped
+        # This is best-effort since we might be in a different thread
+        if self.blocking_future and not self.blocking_future.done():
+            try:
+                loop = self._get_valid_loop(self.default_loop)
+                loop.call_soon_threadsafe(self.blocking_future.set_result, None)
+            except (RuntimeError, Exception):
+                pass
 
     def run(self) -> None:
         self.blocking_future = self.default_loop.create_future()
@@ -398,7 +411,10 @@ class AsyncRPC:
                     raw_item = self._transport.recv()
                     item = _tensor_to_cuda(raw_item)
                 except Exception as exc:
-                    logger.error(f"RPC recv failed (rpc_id={self.id}): {exc}")
+                    if self._stopping:
+                        logger.debug(f"RPC {self.id} shutting down ({exc})")
+                    else:
+                        logger.error(f"RPC recv failed (rpc_id={self.id}): {exc}")
                     break
 
                 if item is None:

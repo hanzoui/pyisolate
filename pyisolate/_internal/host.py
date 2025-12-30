@@ -201,6 +201,12 @@ class Extension(Generic[T]):
         """Stop the extension process and clean up queues/listeners."""
         errors: list[str] = []
 
+        if hasattr(self, "rpc") and self.rpc:
+            try:
+                self.rpc.shutdown()
+            except Exception as exc:
+                errors.append(f"rpc shutdown: {exc}")
+
         # Terminate process
         if hasattr(self, "proc") and self.proc:
             try:
