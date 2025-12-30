@@ -10,7 +10,7 @@ and is used to demonstrate expected behavior for each protocol method.
 
 
 from pyisolate._internal.serialization_registry import SerializerRegistry
-from pyisolate._internal.shared import ProxiedSingleton
+from pyisolate._internal.rpc_protocol import ProxiedSingleton
 from pyisolate.interfaces import IsolationAdapter
 
 from .fixtures.test_adapter import MockHostAdapter, MockRegistry, MockTestData

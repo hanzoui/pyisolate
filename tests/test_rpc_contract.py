@@ -15,8 +15,7 @@ import asyncio
 
 import pytest
 
-from pyisolate._internal import shared
-from pyisolate._internal.shared import ProxiedSingleton, SingletonMetaclass
+from pyisolate._internal.rpc_protocol import ProxiedSingleton, SingletonMetaclass
 
 from .fixtures.test_adapter import MockRegistry
 

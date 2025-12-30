@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from ._internal.shared import ProxiedSingleton
+    from ._internal.rpc_protocol import ProxiedSingleton
 
 
 class ExtensionManagerConfig(TypedDict):

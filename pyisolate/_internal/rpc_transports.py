@@ -163,6 +163,11 @@ class JSONSocketTransport:
             remaining -= len(chunk)
         return b''.join(chunks)
 
+    def close(self) -> None:
+        """Close the underlying socket."""
+        with contextlib.suppress(Exception):
+            self._sock.close()
+
     def _json_default(self, obj: Any) -> Any:
         """Handle non-JSON types during serialization."""
         import traceback as tb_module

@@ -4,7 +4,7 @@ from types import ModuleType
 import pytest
 
 from pyisolate._internal import client
-from pyisolate._internal.shared import ProxiedSingleton
+from pyisolate._internal.rpc_protocol import ProxiedSingleton
 from pyisolate.config import ExtensionConfig
 from pyisolate.shared import ExtensionBase
 

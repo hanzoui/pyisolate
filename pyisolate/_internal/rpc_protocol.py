@@ -426,7 +426,7 @@ class AsyncRPC:
                                     "original loop closed and no current loop available"
                                 )
                                 return
-                        
+
                         try:
                             if item.get("error"):
                                 calling_loop.call_soon_threadsafe(
@@ -441,7 +441,7 @@ class AsyncRPC:
                                     f"RPC {self.id}: Loop closed while delivering response {item['call_id']}"
                                 )
                             else:
-                                logger.error(f"RPC Response Delivery Failed: {e}") 
+                                logger.error(f"RPC Response Delivery Failed: {e}")
 
                 elif item["kind"] in ("call", "callback"):
                     request = cast(Union[RPCRequest, RPCCallback], item)
@@ -510,7 +510,7 @@ class AsyncRPC:
                     id_gen += 1
                     with self.lock:
                         self.pending[call_id] = typed_item
-                    
+
                     serialized_args = serialize_for_isolation(typed_item["args"])
                     serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
                     request_msg: RPCMessage = RPCRequest(

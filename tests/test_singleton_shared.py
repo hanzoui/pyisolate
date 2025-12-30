@@ -3,7 +3,7 @@
 
 import pytest
 
-from pyisolate._internal.shared import (
+from pyisolate._internal.rpc_protocol import (
     LocalMethodRegistry,
     ProxiedSingleton,
     SingletonMetaclass,

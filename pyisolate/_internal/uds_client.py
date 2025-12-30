@@ -25,6 +25,7 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+
     from ..config import ExtensionConfig
 
 from .tensor_serializer import register_tensor_serializer
@@ -40,7 +41,7 @@ def main() -> None:
         level=logging.INFO,
         force=True
     )
-    
+
     # 1. Get UDS address from environment
     uds_address = os.environ.get("PYISOLATE_UDS_ADDRESS")
     if not uds_address:
@@ -193,7 +194,7 @@ async def _async_uds_entrypoint(
                 adapter.handle_api_registration(api_instance, rpc)
                 # Verify UtilsProxy specifically
                 if api_instance.__class__.__name__ == "UtilsProxy":
-                    import comfy.utils
+                    import comfy.utils  # type: ignore
                     logger.info("After UtilsProxy registration: PROGRESS_BAR_HOOK = %s",
                                comfy.utils.PROGRESS_BAR_HOOK)
 
@@ -210,7 +211,7 @@ async def _async_uds_entrypoint(
         try:
             # Check PROGRESS_BAR_HOOK before module load
             try:
-                import comfy.utils
+                import comfy.utils  # type: ignore
                 logger.info("BEFORE module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
             except Exception:
                 pass
@@ -221,7 +222,7 @@ async def _async_uds_entrypoint(
 
             # Check PROGRESS_BAR_HOOK after module load
             try:
-                import comfy.utils
+                import comfy.utils  # type: ignore
                 logger.info("AFTER module load: PROGRESS_BAR_HOOK = %s", comfy.utils.PROGRESS_BAR_HOOK)
             except Exception:
                 pass

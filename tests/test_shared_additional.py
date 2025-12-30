@@ -5,14 +5,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pyisolate._internal import shared
-from pyisolate._internal.shared import (
+from pyisolate._internal.rpc_protocol import (
     AsyncRPC,
-    AttrDict,
-    AttributeContainer,
     LocalMethodRegistry,
     ProxiedSingleton,
     SingletonMetaclass,
+)
+from pyisolate._internal.rpc_serialization import (
+    AttrDict,
+    AttributeContainer,
+    RPCPendingRequest,
     _prepare_for_rpc,
     _tensor_to_cuda,
 )
@@ -62,7 +64,7 @@ def test_async_rpc_send_thread_sets_exception_on_send_failure():
     recv_q: queue.Queue = queue.Queue()
     rpc = AsyncRPC(recv_queue=recv_q, send_queue=FailingQueue())
 
-    pending = shared.RPCPendingRequest(  # type: ignore[call-arg]
+    pending = RPCPendingRequest(  # type: ignore[call-arg]
         kind="call",
         object_id="obj",
         parent_call_id=None,
@@ -95,7 +97,7 @@ def test_async_rpc_send_thread_callback_failure_sets_exception():
     recv_q: queue.Queue = queue.Queue()
     rpc = AsyncRPC(recv_queue=recv_q, send_queue=FailingQueue())
 
-    pending = shared.RPCPendingRequest(  # type: ignore[call-arg]
+    pending = RPCPendingRequest(  # type: ignore[call-arg]
         kind="callback",
         object_id="cb",
         parent_call_id=None,

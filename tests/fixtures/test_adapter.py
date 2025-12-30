@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pyisolate._internal.shared import AsyncRPC, ProxiedSingleton
+from pyisolate._internal.rpc_protocol import AsyncRPC, ProxiedSingleton
 from pyisolate.interfaces import IsolationAdapter, SerializerRegistryProtocol
 
 

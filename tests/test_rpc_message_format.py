@@ -6,11 +6,13 @@ errors propagate correctly across process boundaries.
 
 import pytest
 
-from pyisolate._internal.shared import (
-    AttrDict,
-    AttributeContainer,
+from pyisolate._internal.rpc_protocol import (
     ProxiedSingleton,
     SingletonMetaclass,
+)
+from pyisolate._internal.rpc_serialization import (
+    AttrDict,
+    AttributeContainer,
     _prepare_for_rpc,
 )
 
