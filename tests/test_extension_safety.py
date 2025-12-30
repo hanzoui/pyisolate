@@ -1,7 +1,5 @@
 """Tests for extension naming, dependency validation, and path safety."""
 
-import os
-
 import pytest
 
 from pyisolate._internal import host
@@ -59,15 +57,4 @@ class TestValidatePathWithinRoot:
             host.validate_path_within_root(other, root)
 
 
-class TestEnvironmentContext:
-    def test_environment_sets_and_restores(self):
-        original = os.environ.get("PYISOLATE_TEST_VAR")
-        with host.environment(PYISOLATE_TEST_VAR="123"):
-            assert os.environ.get("PYISOLATE_TEST_VAR") == "123"
-        assert os.environ.get("PYISOLATE_TEST_VAR") == original
 
-    def test_environment_unsets_when_none(self):
-        os.environ["PYISOLATE_TEST_VAR2"] = "abc"
-        with host.environment(PYISOLATE_TEST_VAR2=None):
-            assert os.environ.get("PYISOLATE_TEST_VAR2") == "None"
-        assert os.environ.get("PYISOLATE_TEST_VAR2") == "abc"

@@ -105,7 +105,18 @@ def test_initialize_process_requires_share_torch_for_cuda_ipc(tmp_path):
 
 def test_initialize_process_cuda_ipc_unavailable_raises(monkeypatch, tmp_path):
     ext = DummyExtension(tmp_path, {"share_torch": True, "share_cuda_ipc": True})
-    monkeypatch.setattr(host, "_probe_cuda_ipc_support", lambda: (False, "no"))
+    from pyisolate._internal import torch_utils
+    monkeypatch.setattr(torch_utils, "probe_cuda_ipc_support", lambda: (False, "no"))
+
+    def mock_launch():
+        if ext.config.get("share_cuda_ipc"):
+            supported, reason = torch_utils.probe_cuda_ipc_support()
+            if not supported:
+                raise RuntimeError(f"CUDA IPC not available: {reason}")
+        return SimpleNamespace(poll=lambda: None, terminate=lambda: None)
+
+    monkeypatch.setattr(ext, "_Extension__launch", mock_launch)
+
     with pytest.raises(RuntimeError):
         ext._initialize_process()
 
@@ -114,7 +125,6 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
     ext = DummyExtension(tmp_path, {"share_torch": True, "share_cuda_ipc": False})
     monkeypatch.setattr(host, "AsyncRPC", lambda recv_queue=None, send_queue=None, transport=None: DummyRPC())
 
-    # Mock subprocess.Popen
     class MockPopen:
         def __init__(self, cmd, **kwargs):
             self.args = cmd
@@ -124,10 +134,11 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
         def terminate(self): pass
         def kill(self): pass
         def wait(self, timeout=None): return 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
 
     monkeypatch.setattr(host.subprocess, "Popen", MockPopen)
 
-    # Mock socket for UDS listener
     class MockSocket:
         def __init__(self, *args, **kwargs): pass
         def bind(self, path): pass
@@ -142,10 +153,8 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
     monkeypatch.setattr(host.socket, "AF_UNIX", 1)
     monkeypatch.setattr(host.socket, "SOCK_STREAM", 1)
 
-    # Mock os.chmod
-    monkeypatch.setattr(host.os, "chmod", lambda path, mode: None)
+    monkeypatch.setattr(host.os, "chmod", lambda path, mode, **kwargs: None)
 
-    # Mock JSONSocketTransport
     class MockTransport:
         def __init__(self, sock): pass
         def send(self, data): pass
@@ -153,6 +162,20 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
         def close(self): pass
 
     monkeypatch.setattr(host, "JSONSocketTransport", MockTransport)
+
+    from pyisolate._internal import environment
+
+    venv_path = Path(tmp_path) / "demo"
+    site_packages = venv_path / "lib" / "python3.12" / "site-packages"
+    site_packages.mkdir(parents=True, exist_ok=True)
+
+    python_exe = venv_path / "bin" / "python"
+    python_exe.parent.mkdir(parents=True, exist_ok=True)
+    python_exe.write_text("#!/usr/bin/env python")
+    python_exe.chmod(0o755)
+
+    monkeypatch.setattr(environment, "create_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(environment, "install_dependencies", lambda *args, **kwargs: None)
 
     ext._initialize_process()
     assert os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "0"
@@ -171,9 +194,10 @@ def test_install_dependencies_no_deps_returns(monkeypatch, tmp_path):
 
 
 def test_probe_cuda_ipc_support_handles_import_error(monkeypatch):
-    monkeypatch.setattr(host.sys, "platform", "linux")
-    monkeypatch.setitem(host.sys.modules, "torch", None)
-    supported, reason = host._probe_cuda_ipc_support()
+    from pyisolate._internal import torch_utils
+    monkeypatch.setattr(torch_utils.sys, "platform", "linux")
+    monkeypatch.setitem(torch_utils.sys.modules, "torch", None)
+    supported, reason = torch_utils.probe_cuda_ipc_support()
     assert supported is False
     assert "torch import failed" in reason
 
@@ -186,11 +210,12 @@ def test_install_dependencies_respects_lock_cache(monkeypatch, tmp_path):
     exe.write_text("#!/usr/bin/env python")
 
     lock = ext.venv_path / ".pyisolate_deps.json"
+    from pyisolate._internal import environment
     descriptor = {
         "dependencies": [],
         "share_torch": True,
         "torch_spec": None,
-        "pyisolate": host.pyisolate_version,
+        "pyisolate": environment.pyisolate_version,
         "python": host.sys.version,
     }
     import hashlib

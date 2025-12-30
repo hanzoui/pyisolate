@@ -77,8 +77,7 @@ def test_async_rpc_send_thread_sets_exception_on_send_failure():
     rpc.outbox.put(pending)
     rpc.outbox.put(None)
 
-    with pytest.raises(RuntimeError):
-        rpc._send_thread()
+    rpc._send_thread()
     loop.run_until_complete(asyncio.sleep(0))
     assert pending["future"].done() is True
     with pytest.raises(RuntimeError):
@@ -110,8 +109,7 @@ def test_async_rpc_send_thread_callback_failure_sets_exception():
     rpc.outbox.put(pending)
     rpc.outbox.put(None)
 
-    with pytest.raises(RuntimeError):
-        rpc._send_thread()
+    rpc._send_thread()
     loop.run_until_complete(asyncio.sleep(0))
     assert pending["future"].done() is True
     with pytest.raises(RuntimeError):
