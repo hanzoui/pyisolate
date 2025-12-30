@@ -21,7 +21,8 @@ from ..config import ExtensionConfig
 from ..path_helpers import serialize_host_snapshot
 from ..shared import ExtensionBase
 from .loader import load_adapter
-from .shared import AsyncRPC, JSONSocketTransport
+from .rpc_protocol import AsyncRPC
+from .rpc_transports import JSONSocketTransport
 from .tensor_serializer import register_tensor_serializer
 from .torch_utils import get_torch_ecosystem_packages
 

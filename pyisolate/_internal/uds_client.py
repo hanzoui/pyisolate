@@ -55,7 +55,7 @@ def main() -> None:
     client_sock.connect(uds_address)
 
     # 3. Create JSON transport (NO PICKLE)
-    from .shared import JSONSocketTransport
+    from .rpc_transports import JSONSocketTransport
     transport = JSONSocketTransport(client_sock)
 
     # 4. Receive bootstrap data from host via JSON
@@ -115,7 +115,7 @@ async def _async_uds_entrypoint(
     """Async entrypoint for isolated processes using JSON-RPC transport."""
     from ..interfaces import IsolationAdapter
     from .loader import load_adapter
-    from .shared import (
+    from .rpc_protocol import (
         AsyncRPC,
         ProxiedSingleton,
         set_child_rpc_instance,

@@ -32,7 +32,7 @@ Basic Usage:
     >>> asyncio.run(main())
 """
 
-from ._internal.shared import ProxiedSingleton, local_execution
+from ._internal.rpc_protocol import ProxiedSingleton, local_execution
 from .config import ExtensionConfig, ExtensionManagerConfig
 from .host import ExtensionBase, ExtensionManager
 

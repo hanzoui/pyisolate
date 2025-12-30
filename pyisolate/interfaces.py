@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from ._internal.shared import AsyncRPC, ProxiedSingleton
+from ._internal.rpc_protocol import AsyncRPC, ProxiedSingleton
 
 
 @runtime_checkable

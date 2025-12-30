@@ -3,7 +3,7 @@
 from types import ModuleType
 from typing import TypeVar, final
 
-from ._internal.shared import AsyncRPC, ProxiedSingleton
+from ._internal.rpc_protocol import AsyncRPC, ProxiedSingleton
 
 proxied_type = TypeVar("proxied_type", bound=object)
 

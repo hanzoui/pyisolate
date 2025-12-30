@@ -25,7 +25,7 @@ from ..config import ExtensionConfig
 from ..interfaces import IsolationAdapter
 from ..shared import ExtensionBase
 from .bootstrap import bootstrap_child
-from .shared import AsyncRPC, ProxiedSingleton, set_child_rpc_instance
+from .rpc_protocol import AsyncRPC, ProxiedSingleton, set_child_rpc_instance
 
 logger = logging.getLogger(__name__)
 
