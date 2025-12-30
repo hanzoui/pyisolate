@@ -995,9 +995,9 @@ class AsyncRPC:
                     else callback(*request["args"], **request["kwargs"])
                 )
             elif request["kind"] == "call":
-                callee = None
                 with self.lock:
                     callee = self.callees.get(request["object_id"])
+
                 if callee is None:
                     raise ValueError(f"Object ID {request['object_id']} not registered")
                 func = getattr(callee, request["method"])
@@ -1110,167 +1110,188 @@ class AsyncRPC:
     def _recv_thread(self) -> None:
         while True:
             try:
-                item = _tensor_to_cuda(self._transport.recv())
-            except Exception as exc:
-                raise RuntimeError(f"RPC recv failed (rpc_id={self.id}): {exc}") from exc
+                try:
+                    raw_item = self._transport.recv()
+                    item = _tensor_to_cuda(raw_item)
+                except Exception as exc:
+                    logger.error(f"RPC recv failed (rpc_id={self.id}): {exc}")
+                    break
 
-            if item is None:
-                if self.blocking_future:
-                    try:
-                        loop = self._get_valid_loop(self.default_loop)
-                        loop.call_soon_threadsafe(self.blocking_future.set_result, None)
-                    except RuntimeError:
-                        pass  # Loop closed, blocking_future won't be awaited anyway
-                break
-
-            if item["kind"] == "response":
-                with self.lock:
-                    pending_request = self.pending.pop(item["call_id"], None)
-                if pending_request:
-                    # Get a valid loop - the calling_loop may be closed
-                    calling_loop = pending_request["calling_loop"]
-                    if calling_loop.is_closed():
-                        # Original loop is closed, try to get the current one
+                if item is None:
+                    if self.blocking_future:
                         try:
-                            calling_loop = self._get_valid_loop()
+                            loop = self._get_valid_loop(self.default_loop)
+                            loop.call_soon_threadsafe(self.blocking_future.set_result, None)
                         except RuntimeError:
-                            logger.warning(
-                                f"RPC {self.id}: Cannot deliver response {item['call_id']} - "
-                                "original loop closed and no current loop available"
-                            )
-                            continue
+                            pass  # Loop closed, blocking_future won't be awaited anyway
+                    break
+
+
+
+                if item["kind"] == "response":
+                    with self.lock:
+                        pending_request = self.pending.pop(item["call_id"], None)
+                    if pending_request:
+                        # Get a valid loop - the calling_loop may be closed
+                        calling_loop = pending_request["calling_loop"]
+                        if calling_loop.is_closed():
+                            # Original loop is closed, try to get the current one
+                            try:
+                                calling_loop = self._get_valid_loop()
+                            except RuntimeError:
+                                logger.warning(
+                                    f"RPC {self.id}: Cannot deliver response {item['call_id']} - "
+                                    "original loop closed and no current loop available"
+                                )
+                                return
+                        
+                        try:
+                            if item.get("error"):
+                                calling_loop.call_soon_threadsafe(
+                                    pending_request["future"].set_exception, Exception(item["error"]))
+                            else:
+                                calling_loop.call_soon_threadsafe(
+                                    pending_request["future"].set_result, item["result"])
+
+                        except RuntimeError as e:
+                            if "Event loop is closed" in str(e):
+                                logger.warning(
+                                    f"RPC {self.id}: Loop closed while delivering response {item['call_id']}"
+                                )
+                            else:
+                                logger.error(f"RPC Response Delivery Failed: {e}") 
+
+                elif item["kind"] in ("call", "callback"):
+                    request = cast(Union[RPCRequest, RPCCallback], item)
+                    request_parent = request.get("parent_call_id")
+
+                    # Get a valid loop for dispatching this request
+                    try:
+                        call_on_loop = self._get_valid_loop(self.default_loop)
+                    except RuntimeError as e:
+                        logger.error(
+                            f"RPC {self.id}: Cannot dispatch request {request.get('call_id')} - "
+                            f"no valid event loop: {e}"
+                        )
+                        # Send error response back
+                        error_response = RPCResponse(
+                            kind="response",
+                            call_id=request["call_id"],
+                            result=None,
+                            error=f"No valid event loop available: {e}"
+                        )
+                        self._transport.send(_prepare_for_rpc(error_response))
+                        continue
+
+                    if request_parent is not None:
+                        with self.lock:
+                            pending_request = self.pending.get(request_parent)
+                        if pending_request:
+                            parent_loop = pending_request["calling_loop"]
+                            if not parent_loop.is_closed():
+                                call_on_loop = parent_loop
+
+                    async def call_with_context(captured_request: RPCRequest | RPCCallback) -> None:
+                        token = self.handling_call_id.set(captured_request["call_id"])
+                        try:
+                            return await self.dispatch_request(captured_request)
+                        finally:
+                            self.handling_call_id.reset(token)
 
                     try:
-                        if item.get("error"):
-                            calling_loop.call_soon_threadsafe(
-                                pending_request["future"].set_exception, Exception(item["error"]))
-                        else:
-                            calling_loop.call_soon_threadsafe(
-                                pending_request["future"].set_result, item["result"])
+                        asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
                     except RuntimeError as e:
                         if "Event loop is closed" in str(e):
-                            logger.warning(
-                                f"RPC {self.id}: Loop closed while delivering response {item['call_id']}"
-                            )
+                            # Loop closed between our check and the call - try again with fresh loop
+                            logger.warning(f"RPC {self.id}: Loop closed, retrying with fresh loop")
+                            call_on_loop = self._get_valid_loop()
+                            asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
                         else:
                             raise
 
-            elif item["kind"] in ("call", "callback"):
-                request = cast(Union[RPCRequest, RPCCallback], item)
-                request_parent = request.get("parent_call_id")
-
-                # Get a valid loop for dispatching this request
-                try:
-                    call_on_loop = self._get_valid_loop(self.default_loop)
-                except RuntimeError as e:
-                    logger.error(
-                        f"RPC {self.id}: Cannot dispatch request {request.get('call_id')} - "
-                        f"no valid event loop: {e}"
-                    )
-                    # Send error response back
-                    error_response = RPCResponse(
-                        kind="response",
-                        call_id=request["call_id"],
-                        result=None,
-                        error=f"No valid event loop available: {e}"
-                    )
-                    self._transport.send(_prepare_for_rpc(error_response))
-                    continue
-
-                if request_parent is not None:
-                    with self.lock:
-                        pending_request = self.pending.get(request_parent)
-                    if pending_request:
-                        parent_loop = pending_request["calling_loop"]
-                        if not parent_loop.is_closed():
-                            call_on_loop = parent_loop
-
-                async def call_with_context(captured_request: RPCRequest | RPCCallback) -> None:
-                    token = self.handling_call_id.set(captured_request["call_id"])
-                    try:
-                        return await self.dispatch_request(captured_request)
-                    finally:
-                        self.handling_call_id.reset(token)
-
-                try:
-                    asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
-                except RuntimeError as e:
-                    if "Event loop is closed" in str(e):
-                        # Loop closed between our check and the call - try again with fresh loop
-                        logger.warning(f"RPC {self.id}: Loop closed, retrying with fresh loop")
-                        call_on_loop = self._get_valid_loop()
-                        asyncio.run_coroutine_threadsafe(call_with_context(request), call_on_loop)
-                    else:
-                        raise
+            except Exception as outer_exc:
+                import traceback
+                traceback.print_exc()
+                logger.error(f"RPC Recv Thread CRASHED: {outer_exc}")
 
     def _send_thread(self) -> None:
         id_gen = 0
         while True:
-            item = self.outbox.get()
-            if item is None:
-                break
-            typed_item: RPCPendingRequest = item
+            try:
+                item = self.outbox.get()
+                if item is None:
+                    break
+                typed_item: RPCPendingRequest = item
 
-            if typed_item["kind"] == "call":
-                call_id = id_gen
-                id_gen += 1
-                with self.lock:
-                    self.pending[call_id] = typed_item
-                serialized_args = serialize_for_isolation(typed_item["args"])
-                serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
-                request_msg: RPCMessage = RPCRequest(
-                    kind="call",
-                    object_id=typed_item["object_id"],
-                    call_id=call_id,
-                    parent_call_id=typed_item["parent_call_id"],
-                    method=typed_item["method"],
-                    args=_prepare_for_rpc(serialized_args),
-                    kwargs=_prepare_for_rpc(serialized_kwargs),
-                )
-                try:
-                    self._transport.send(request_msg)
-                except Exception as exc:
+                if typed_item["kind"] == "call":
+                    call_id = id_gen
+                    id_gen += 1
                     with self.lock:
-                        pending = self.pending.pop(call_id, None)
-                    if pending:
-                        calling_loop = pending["calling_loop"]
-                        if not calling_loop.is_closed():
-                            with contextlib.suppress(RuntimeError):
-                                calling_loop.call_soon_threadsafe(
-                                    pending["future"].set_exception, RuntimeError(str(exc)))
-                    raise
+                        self.pending[call_id] = typed_item
+                    
 
-            elif typed_item["kind"] == "callback":
-                call_id = id_gen
-                id_gen += 1
-                with self.lock:
-                    self.pending[call_id] = typed_item
-                serialized_args = serialize_for_isolation(typed_item["args"])
-                serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
-                request_msg = RPCCallback(
-                    kind="callback",
-                    callback_id=typed_item["object_id"],
-                    call_id=call_id,
-                    parent_call_id=typed_item["parent_call_id"],
-                    args=_prepare_for_rpc(serialized_args),
-                    kwargs=_prepare_for_rpc(serialized_kwargs),
-                )
-                try:
-                    self._transport.send(request_msg)
-                except Exception as exc:
+
+                    serialized_args = serialize_for_isolation(typed_item["args"])
+                    serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
+                    request_msg: RPCMessage = RPCRequest(
+                        kind="call",
+                        object_id=typed_item["object_id"],
+                        call_id=call_id,
+                        parent_call_id=typed_item["parent_call_id"],
+                        method=typed_item["method"],
+                        args=_prepare_for_rpc(serialized_args),
+                        kwargs=_prepare_for_rpc(serialized_kwargs),
+                    )
+                    try:
+                        self._transport.send(request_msg)
+                    except Exception as exc:
+                        with self.lock:
+                            pending = self.pending.pop(call_id, None)
+                        if pending:
+                            calling_loop = pending["calling_loop"]
+                            if not calling_loop.is_closed():
+                                with contextlib.suppress(RuntimeError):
+                                    calling_loop.call_soon_threadsafe(
+                                        pending["future"].set_exception, RuntimeError(str(exc)))
+                        # Don't raise, just log, so thread stays alive
+                        logger.error(f"RPC Send Failed: {exc}")
+
+                elif typed_item["kind"] == "callback":
+                    call_id = id_gen
+                    id_gen += 1
                     with self.lock:
-                        pending = self.pending.pop(call_id, None)
-                    if pending:
-                        calling_loop = pending["calling_loop"]
-                        if not calling_loop.is_closed():
-                            with contextlib.suppress(RuntimeError):
-                                calling_loop.call_soon_threadsafe(
-                                    pending["future"].set_exception, RuntimeError(str(exc)))
-                    raise
+                        self.pending[call_id] = typed_item
+                    serialized_args = serialize_for_isolation(typed_item["args"])
+                    serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
+                    request_msg = RPCCallback(
+                        kind="callback",
+                        callback_id=typed_item["object_id"],
+                        call_id=call_id,
+                        parent_call_id=typed_item["parent_call_id"],
+                        args=_prepare_for_rpc(serialized_args),
+                        kwargs=_prepare_for_rpc(serialized_kwargs),
+                    )
+                    try:
+                        self._transport.send(request_msg)
+                    except Exception as exc:
+                        with self.lock:
+                            pending = self.pending.pop(call_id, None)
+                        if pending:
+                            calling_loop = pending["calling_loop"]
+                            if not calling_loop.is_closed():
+                                with contextlib.suppress(RuntimeError):
+                                    calling_loop.call_soon_threadsafe(
+                                        pending["future"].set_exception, RuntimeError(str(exc)))
+                        logger.error(f"RPC Callback Send Failed: {exc}")
 
-            elif typed_item["kind"] == "response":
-                response_msg: RPCMessage = _prepare_for_rpc(typed_item)
-                self._transport.send(response_msg)
+                elif typed_item["kind"] == "response":
+                    response_msg: RPCMessage = _prepare_for_rpc(typed_item)
+                    self._transport.send(response_msg)
+
+            except Exception as outer_exc:
+                import traceback
+                traceback.print_exc()
+                logger.error(f"RPC Send Thread CRASHED: {outer_exc}")
 
 
 class SingletonMetaclass(type):
