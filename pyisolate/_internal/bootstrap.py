@@ -15,7 +15,6 @@ from typing import Any
 
 from ..interfaces import IsolationAdapter
 from ..path_helpers import build_child_sys_path
-from .loader import load_adapter
 from .serialization_registry import SerializerRegistry
 
 logger = logging.getLogger(__name__)
@@ -57,6 +56,27 @@ def _apply_sys_path(snapshot: dict[str, Any]) -> None:
 
     sys.path[:] = merged
     logger.debug("Applied %d paths from snapshot (preferred_root=%s)", len(child_paths), preferred_root)
+
+
+def _rehydrate_adapter(start_ref: str) -> IsolationAdapter:
+    """Import and instantiate adapter from string reference."""
+    import importlib
+    from .adapter_registry import AdapterRegistry
+
+    try:
+        module_path, class_name = start_ref.split(":", 1)
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        
+        # Instantiate and register immediately
+        adapter = cls()
+        
+        # KEY STEP: Register in child's memory space so subsequent calls work
+        AdapterRegistry.register(adapter)
+        
+        return adapter
+    except Exception as exc:
+        raise ValueError(f"Failed to rehydrate adapter '{start_ref}': {exc}") from exc
 
 
 def bootstrap_child() -> IsolationAdapter | None:
@@ -102,21 +122,23 @@ def bootstrap_child() -> IsolationAdapter | None:
 
     _apply_sys_path(snapshot)
 
-    adapter_name = snapshot.get("adapter_name")
-    if not adapter_name:
-        logger.debug("Snapshot present without adapter_name; continuing without adapter")
-        return None
+    adapter: IsolationAdapter | None = None
+    
+    # v1.0: Try explicit rehydration first
+    adapter_ref = snapshot.get("adapter_ref")
+    if adapter_ref:
+        try:
+            adapter = _rehydrate_adapter(adapter_ref)
+            logger.info("Rehydrated adapter from ref: %s", adapter_ref)
+        except Exception as exc:
+            logger.warning("Failed to rehydrate adapter from ref %s: %s", adapter_ref, exc)
 
-    adapter: IsolationAdapter | None
-    try:
-        adapter = load_adapter(adapter_name)
-    except Exception as exc:
-        raise ValueError(f"Failed to load adapter '{adapter_name}': {exc}") from exc
+    if not adapter and adapter_ref:
+          # If we had info but failed to load, that's an error
+          raise ValueError("Snapshot contained adapter info but adapter could not be loaded")
 
-    if adapter is None:
-        raise ValueError(f"Adapter '{adapter_name}' could not be loaded")
-
-    adapter.setup_child_environment(snapshot)
+    if adapter:
+        adapter.setup_child_environment(snapshot)
 
     registry = SerializerRegistry.get_instance()
     adapter.register_serializers(registry)

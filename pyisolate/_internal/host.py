@@ -20,7 +20,6 @@ from .environment import (
     validate_dependency,
     validate_path_within_root,
 )
-from .loader import load_adapter
 from .rpc_protocol import AsyncRPC
 from .rpc_transports import JSONSocketTransport
 from .tensor_serializer import register_tensor_serializer
@@ -97,7 +96,10 @@ class Extension(Generic[T]):
         # Auto-populate APIs from adapter if not already in config
         if "apis" not in self.config:
             try:
-                adapter = load_adapter()
+                # v1.0: Check registry
+                from .adapter_registry import AdapterRegistry
+                adapter = AdapterRegistry.get()
+
                 if adapter:
                     rpc_services = adapter.provide_rpc_services()
                     self.config["apis"] = rpc_services

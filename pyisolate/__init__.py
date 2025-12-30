@@ -45,4 +45,16 @@ __all__ = [
     "ExtensionConfig",
     "ProxiedSingleton",
     "local_execution",
+    "register_adapter",
+    "get_adapter",
 ]
+
+def register_adapter(adapter):
+    """Register an adapter instance for pyisolate to use."""
+    from ._internal.adapter_registry import AdapterRegistry
+    AdapterRegistry.register(adapter)
+
+def get_adapter():
+    """Get the registered adapter, or None if not registered."""
+    from ._internal.adapter_registry import AdapterRegistry
+    return AdapterRegistry.get()

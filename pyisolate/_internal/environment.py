@@ -15,7 +15,6 @@ from typing import Any, Optional
 
 from ..config import ExtensionConfig
 from ..path_helpers import serialize_host_snapshot
-from .loader import load_adapter
 from .torch_utils import get_torch_ecosystem_packages
 
 logger = logging.getLogger(__name__)
@@ -105,7 +104,9 @@ def build_extension_snapshot(module_path: str) -> dict[str, object]:
     adapter = None
     path_config: dict[str, object] = {}
     try:
-        adapter = load_adapter()
+        # v1.0: Check registry first
+        from .adapter_registry import AdapterRegistry
+        adapter = AdapterRegistry.get()
     except Exception as exc:
         logger.warning("Adapter load failed: %s", exc)
 
@@ -123,8 +124,19 @@ def build_extension_snapshot(module_path: str) -> dict[str, object]:
         except Exception as exc:
             logger.warning("Adapter serializer registration failed: %s", exc)
 
+    # v1.0: Serialize adapter reference for rehydration
+    adapter_ref: str | None = None
+    if adapter:
+        cls = adapter.__class__
+        # Constraint: Adapter class must be importable (not defined in __main__ or closure)
+        if cls.__module__ == "__main__":
+             logger.warning("Adapter class %s is defined in __main__ and cannot be rehydrated in child", cls.__name__)
+        else:
+            adapter_ref = f"{cls.__module__}:{cls.__name__}"
+
     snapshot.update(
         {
+            "adapter_ref": adapter_ref,
             "adapter_name": adapter.identifier if adapter else None,
             "preferred_root": path_config.get("preferred_root"),
             "additional_paths": path_config.get("additional_paths", []),

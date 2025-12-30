@@ -115,7 +115,6 @@ async def _async_uds_entrypoint(
 ) -> None:
     """Async entrypoint for isolated processes using JSON-RPC transport."""
     from ..interfaces import IsolationAdapter
-    from .loader import load_adapter
     from .rpc_protocol import (
         AsyncRPC,
         ProxiedSingleton,
@@ -153,10 +152,10 @@ async def _async_uds_entrypoint(
     if not os.path.isdir(module_path):
         raise ValueError(f"Module path {module_path} is not a directory.")
 
-    # Load adapter for API registration
-    adapter: IsolationAdapter | None = None
-    with contextlib.suppress(Exception):
-        adapter = load_adapter()
+    # v1.0: Child adapter was registered during bootstrap_child() -> _rehydrate_adapter()
+    # So we can just fetch it from the registry
+    from .adapter_registry import AdapterRegistry
+    adapter: IsolationAdapter | None = AdapterRegistry.get()
 
     # CRITICAL: Register serializers in child process
     if adapter:
