@@ -103,7 +103,6 @@ class Extension(Generic[T]):
                 if adapter:
                     rpc_services = adapter.provide_rpc_services()
                     self.config["apis"] = rpc_services
-                    logger.info("[Extension] Auto-populated %d RPC services from adapter", len(rpc_services))
                 else:
                     self.config["apis"] = []
             except Exception as exc:
@@ -296,8 +295,6 @@ class Extension(Generic[T]):
 
         self._uds_listener = listener_sock
         self._uds_path = uds_path
-
-        logger.info("[PyIsolate][JSON-RPC] Listening on %s", uds_path)
 
         # Build command
         cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]

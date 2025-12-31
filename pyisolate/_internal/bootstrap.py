@@ -126,12 +126,10 @@ def bootstrap_child() -> IsolationAdapter | None:
 
     adapter: IsolationAdapter | None = None
 
-    # v1.0: Try explicit rehydration first
     adapter_ref = snapshot.get("adapter_ref")
     if adapter_ref:
         try:
             adapter = _rehydrate_adapter(adapter_ref)
-            logger.info("Rehydrated adapter from ref: %s", adapter_ref)
         except Exception as exc:
             logger.warning("Failed to rehydrate adapter from ref %s: %s", adapter_ref, exc)
 
