@@ -1,6 +1,10 @@
 import os
+import sys
+import subprocess
+import json
 from pathlib import Path
 from typing import Any
+from .sandbox_detect import RestrictionModel
 
 # ---------------------------------------------------------------------------
 # Sandbox System Path Allow-List (DENY-BY-DEFAULT)
@@ -46,8 +50,9 @@ def build_bwrap_command(
     module_path: str,
     venv_path: str,
     uds_address: str,
-    sandbox_config: dict[str, Any],
-    allow_gpu: bool,
+    allow_gpu: bool = False,
+    sandbox_config: dict[str, Any] | None = None,
+    restriction_model: RestrictionModel = RestrictionModel.NONE,
 ) -> list[str]:
     """Build the bubblewrap command for launching a sandboxed process.
 
@@ -66,32 +71,38 @@ def build_bwrap_command(
         uds_address: Path to the Unix socket for IPC
         sandbox_config: SandboxConfig dict with network, writable_paths, readonly_paths
         allow_gpu: Whether to enable GPU passthrough
+        restriction_model: Detected system restriction model
 
     Returns:
         Command list suitable for subprocess.Popen
     """
+    if sandbox_config is None:
+        sandbox_config = {}
+    
     cmd = ["bwrap"]
 
-    # NOTE: User namespace isolation (--unshare-user) is disabled because
-    # Ubuntu 24.04+ has kernel.apparmor_restrict_unprivileged_userns=1 by default.
-    # This means unprivileged users cannot create user namespaces without an
-    # AppArmor profile that allows it.
-    #
-    # Without user namespace, we still get:
-    # - Filesystem isolation (deny-by-default)
-    # - Read-only venv and module paths (prevent modification)
-    # - Temporary filesystem in /tmp
-    # - Network sharing (required for API calls)
-    #
-    # To enable full user namespace isolation, a sysadmin would need to either:
-    # 1. Set kernel.apparmor_restrict_unprivileged_userns=0
-    # 2. Create an AppArmor profile for pyisolate
-
-    # Mount namespace isolation (this DOES work without user namespace)
-    # PID namespace requires user namespace, so we skip it too
+    # Namespace Isolation Logic
+    # -------------------------
+    # We attempt full user namespace isolation (--unshare-user) if possible.
+    # This allows us to map UIDs and isolate the process fully.
+    # However, modern distros often restrict this (AppArmor, sysctl).
+    
+    if restriction_model == RestrictionModel.NONE:
+        # Full isolation available
+        cmd.extend(["--unshare-user", "--unshare-pid"])
+        # We do NOT unshare-ipc because CUDA shared memory (legacy) and 
+        # Python SharedMemory lease require /dev/shm access in the host namespace 
+        # (or a shared namespace). Since we bind /dev/shm, we keep IPC shared.
+    else:
+        # Run in degraded mode (no user/pid namespace)
+        # We still get filesystem isolation via mount namespace (bwrap default).
+        pass
 
     # New session (detach from terminal)
     cmd.append("--new-session")
+    
+    # Ensure child dies when parent dies (prevent zombie processes)
+    cmd.append("--die-with-parent")
 
     # Essential virtual filesystems
     cmd.extend(["--proc", "/proc"])
@@ -111,31 +122,42 @@ def build_bwrap_command(
 
     # GPU passthrough (if enabled)
     if allow_gpu:
+        cmd.extend(["--ro-bind", "/sys", "/sys"])
         dev_path = Path("/dev")
         for pattern in GPU_PASSTHROUGH_PATTERNS:
             for dev in dev_path.glob(pattern):
                 if dev.exists():
                     cmd.extend(["--dev-bind", str(dev), str(dev)])
         # CUDA IPC requires shared memory
-        # SECURITY NOTE: /dev/shm is shared. This is a known side-channel risk
+        # SECURITY: /dev/shm is shared. This is a known side-channel risk
         # but unavoidable for zero-copy tensor transfer. Document this trade-off.
-        if Path("/dev/shm").exists():
-            cmd.extend(["--bind", "/dev/shm", "/dev/shm"])
+        # MOVED: /dev/shm binding is now global (see below) because CPU tensors need it too.
 
         # CUDA library and runtime paths (read-only)
-        cuda_paths = [
-            "/usr/local/cuda",        # Common CUDA install location
+        # /usr/local/cuda is covered by /usr bind, so we skip it to avoid symlink/mount issues
+        cuda_paths = {
             "/opt/cuda",              # Alternative CUDA location
             "/run/nvidia-persistenced",  # Persistence daemon
-        ]
+        }
+        
+        # Add CUDA_HOME if set and not in /usr (redundant)
+        cuda_home = os.environ.get("CUDA_HOME")
+        if cuda_home:
+            cuda_paths.add(cuda_home)
+
         for cuda_path in cuda_paths:
             if os.path.exists(cuda_path):
+                 # Skip if already covered by /usr bind
+                if cuda_path.startswith("/usr/") and not cuda_path.startswith("/usr/local/"): 
+                     # Actually /usr/local is in /usr. 
+                     # Safe heuristic: if it starts with /usr, we assume covered.
+                     continue
                 cmd.extend(["--ro-bind", cuda_path, cuda_path])
 
-    # Network: default to shared (unshare-net requires CAP_NET_ADMIN or special config)
-    # Only isolate network if explicitly requested AND the system supports it
-    # For most GPU workloads, network isolation isn't critical
-    cmd.append("--share-net")
+    # Network: ISOLATED by default (as per tests)
+    cmd.append("--unshare-net")
+    # If loopback is needed, we might need --share-net or explicit loopback setup.
+    # But tests enforce --unshare-net.
 
     # Additional paths from config (user-specified)
     for path in sandbox_config.get("writable_paths", []):
@@ -145,21 +167,80 @@ def build_bwrap_command(
         if os.path.exists(path):
             cmd.extend(["--ro-bind", path, path])
 
+    # ---------------------------------------------------------------------------
+    # CRITICAL: BINDING HOST DEPENDENCIES (Refactor Branch Logic)
+    # ---------------------------------------------------------------------------
+
+    # 1. Host venv site-packages: READ-ONLY (for share_torch inheritance via .pth file)
+    # The child venv has a .pth file pointing to host site-packages for torch sharing
+    # We find where 'torch' is likely installed (host site-packages)
+    host_site_packages = Path(sys.executable).parent.parent / "lib"
+    for sp in host_site_packages.glob("python*/site-packages"):
+        if sp.exists():
+            cmd.extend(["--ro-bind", str(sp), str(sp)])
+            break
+
+    # 2. PyIsolate package path: READ-ONLY (needed for sandbox_client/uds_client)
+    import pyisolate as pyisolate_pkg
+    pyisolate_path = Path(pyisolate_pkg.__file__).parent.parent.resolve()
+    cmd.extend(["--ro-bind", str(pyisolate_path), str(pyisolate_path)])
+
+    # 3. ComfyUI package path: READ-ONLY (needed for comfy.isolation.adapter)
+    try:
+        import comfy
+        if hasattr(comfy, "__file__") and comfy.__file__:
+            comfy_path = Path(comfy.__file__).parent.parent.resolve()
+        elif hasattr(comfy, "__path__"):
+             # Namespace package support
+            comfy_path = Path(list(comfy.__path__)[0]).parent.resolve()
+        else:
+             comfy_path = None
+        
+        if comfy_path:
+            cmd.extend(["--ro-bind", str(comfy_path), str(comfy_path)])
+    except Exception:
+        pass
+
+    # Shared Memory (REQUIRED for zero-copy tensors via SharedMemory Lease)
+    if Path("/dev/shm").exists():
+        cmd.extend(["--bind", "/dev/shm", "/dev/shm"])
+
     # UDS socket directory must be accessible
     uds_dir = os.path.dirname(uds_address)
+    if uds_dir:
+        # Create parent directories for UDS mount point to ensure they exist in tmpfs structure
+        parts = Path(uds_dir).parts
+        current = Path("/")
+        for part in parts[1:]:
+            current = current / part
+            cmd.extend(["--dir", str(current)])
+
     if uds_dir and os.path.exists(uds_dir):
         cmd.extend(["--bind", uds_dir, uds_dir])
 
     # Environment variables
     cmd.extend(["--setenv", "PYISOLATE_UDS_ADDRESS", uds_address])
     cmd.extend(["--setenv", "PYISOLATE_CHILD", "1"])
+    
+    # 4. Set PYTHONPATH to include pyisolate package
+    # This ensures the child can find 'pyisolate' even if not installed in its venv
+    pyisolate_parent = str(pyisolate_path)
+    # Start with our explicitly bound package
+    new_pythonpath_parts = [pyisolate_parent]
+    
+    # Check existing PYTHONPATH
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        new_pythonpath_parts.append(existing_pythonpath)
+        
+    cmd.extend(["--setenv", "PYTHONPATH", ":".join(new_pythonpath_parts)])
 
     # Inherit select environment variables
     # Standard environment
-    for env_var in ["PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"]:
+    for env_var in ["PATH", "HOME", "LANG", "LC_ALL"]:
         if env_var in os.environ:
-            cmd.extend(["--setenv", env_var, os.environ[env_var]])
-
+             cmd.extend(["--setenv", env_var, os.environ[env_var]])
+        
     # CUDA/GPU environment variables (critical for GPU access)
     cuda_env_vars = [
         "CUDA_HOME",
@@ -175,7 +256,7 @@ def build_bwrap_command(
         if env_var in os.environ:
             cmd.extend(["--setenv", env_var, os.environ[env_var]])
 
-    # Command to run
-    cmd.extend([python_exe, "-m", "pyisolate._internal.sandbox_client"])
+    # Command to run (Corrected to uds_client for main branch architecture)
+    cmd.extend([python_exe, "-m", "pyisolate._internal.uds_client"])
 
     return cmd

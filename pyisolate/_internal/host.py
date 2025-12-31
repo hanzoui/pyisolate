@@ -24,6 +24,8 @@ from .rpc_protocol import AsyncRPC
 from .rpc_transports import JSONSocketTransport
 from .tensor_serializer import register_tensor_serializer
 from .torch_utils import probe_cuda_ipc_support
+from .sandbox import build_bwrap_command
+from .sandbox_detect import detect_sandbox_capability
 
 __all__ = [
     "Extension",
@@ -156,7 +158,7 @@ class Extension(Generic[T]):
 
         os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
 
-        # NOTE: PYISOLATE_CHILD is set in the child's env dict, NOT in os.environ
+        # PYISOLATE_CHILD is set in the child's env dict, NOT in os.environ
         # Setting it in os.environ would affect the HOST process serialization logic
 
         if os.name == "nt":
@@ -296,18 +298,79 @@ class Extension(Generic[T]):
         self._uds_listener = listener_sock
         self._uds_path = uds_path
 
-        # Build command
-        cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
-
         # Prepare environment
         env = os.environ.copy()
-        env["PYISOLATE_UDS_ADDRESS"] = uds_path
-        env["PYISOLATE_CHILD"] = "1"
-        env["PYISOLATE_EXTENSION"] = self.name
-        env["PYISOLATE_MODULE_PATH"] = self.module_path
-        env["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
+
+        # Check platform for sandbox requirement
+        if os_module.uname().sysname == "Linux":
+            # 1. Mandatory Check: Fail Loud if bwrap missing on Linux
+            cap = detect_sandbox_capability()
+            if not cap.available:
+                raise RuntimeError(
+                    f"Process isolation on Linux REQUIRES bubblewrap.\n"
+                    f"Error: {cap.remediation}\n"
+                    f"Details: {cap.restriction_model} - {cap.raw_error}"
+                )
+
+            # 2. Build Bwrap Command
+            # We need to construct the SandboxConfig from self.config if present
+            sandbox_config = self.config.get("sandbox", {})
+            if isinstance(sandbox_config, bool):
+                sandbox_config = {}
+
+            # Detect host site-packages to allow access to Torch/Comfy dependencies
+            # We must bind the site-packages of the HOST python (or at least where torch is)
+            # because the isolated venv is often a thin venv sharing deps or expecting them.
+            import site
+            extra_binds = []
+            
+            # Add standard site-packages
+            site_packages = site.getsitepackages()
+            for sp in site_packages:
+                if os.path.exists(sp):
+                    extra_binds.append(sp)
+            
+            # Also add user site-packages just in case
+            user_site = site.getusersitepackages()
+            if isinstance(user_site, str) and os.path.exists(user_site):
+                extra_binds.append(user_site)
+                
+            cmd = build_bwrap_command(
+                python_exe=python_exe,
+                module_path=self.module_path,
+                venv_path=self.venv_path,
+                uds_address=uds_path,
+                sandbox_config=sandbox_config,
+                allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
+                restriction_model=cap.restriction_model,
+            )
+            
+            # INSTRUMENTATION: LOG THE EXACT COMMAND
+            # logger.error("!" * 80)
+            # logger.error(f"[BWRAP-DEBUG] Launching CMD: {' '.join(cmd)}")
+            # logger.error("!" * 80)
+            
+            # bwrap uses --setenv to pass variables, so the `env` arg to Popen
+
+            
+            # bwrap uses --setenv to pass variables, so the `env` arg to Popen
+            # only affects the bwrap process itself (path lookup, etc), not the child.
+            # We must NOT pass these vars in `env` because they are already in `cmd`.
+            # However, keeping them in `env` is harmless and ensures bwrap has a sane env.
+            
+        else:
+            # Non-Linux (Windows/Mac) - Fallback to direct launch
+            cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
+            
+            env["PYISOLATE_UDS_ADDRESS"] = uds_path
+            env["PYISOLATE_CHILD"] = "1"
+            env["PYISOLATE_EXTENSION"] = self.name
+            env["PYISOLATE_MODULE_PATH"] = self.module_path
+            env["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
 
         # Launch process
+        # logger.error(f"[BWRAP-DEBUG] Final subprocess.Popen args: {cmd}")
+        
         proc = subprocess.Popen(
             cmd,
             env=env,
