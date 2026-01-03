@@ -206,7 +206,7 @@ RPCMessage = Union[RPCRequest, RPCCallback, RPCResponse]
 # Debug flag for verbose RPC message logging (set via PYISOLATE_DEBUG_RPC=1)
 debug_all_messages = bool(os.environ.get("PYISOLATE_DEBUG_RPC"))
 _debug_rpc = debug_all_messages
-_cuda_ipc_env_enabled = os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
+# Removed static _cuda_ipc_env_enabled to allow runtime updates
 _cuda_ipc_warned = False
 _ipc_metrics: dict[str, int] = {"send_cuda_ipc": 0, "send_cuda_fallback": 0}
 
@@ -254,7 +254,8 @@ def _prepare_for_rpc(obj: Any) -> Any:
         import torch
         if isinstance(obj, torch.Tensor):
             if obj.is_cuda:
-                if _cuda_ipc_env_enabled:
+                # Dynamic check to respect runtime activation in host.py
+                if os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1":
                     _ipc_metrics["send_cuda_ipc"] += 1
                     return obj  # allow CUDA IPC path
                 _ipc_metrics["send_cuda_fallback"] += 1

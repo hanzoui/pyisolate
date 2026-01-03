@@ -76,7 +76,9 @@ class Extension(Generic[T]):
         force_ipc = os.environ.get("PYISOLATE_FORCE_CUDA_IPC") == "1"
 
         if "share_cuda_ipc" not in config:
-            config["share_cuda_ipc"] = force_ipc
+            # Default to True ONLY if supported and sharing torch
+            ipc_supported, _ = probe_cuda_ipc_support()
+            config["share_cuda_ipc"] = force_ipc or (config.get("share_torch", False) and ipc_supported)
         elif force_ipc:
             config["share_cuda_ipc"] = True
 
@@ -156,7 +158,9 @@ class Extension(Generic[T]):
             self._cuda_ipc_enabled = True
             logger.debug("CUDA IPC enabled for %s", self.name)
 
-        os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
+        # Monotonically enable IPC logic. Do not disable if already enabled by another extension.
+        if self._cuda_ipc_enabled:
+             os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1"
 
         # PYISOLATE_CHILD is set in the child's env dict, NOT in os.environ
         # Setting it in os.environ would affect the HOST process serialization logic
