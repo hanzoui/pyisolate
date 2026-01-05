@@ -16,6 +16,12 @@ class ExtensionManagerConfig(TypedDict):
     """Root directory where isolated venvs will be created (one subdir per extension)."""
 
 
+class SandboxConfig(TypedDict, total=False):
+    writable_paths: list[str]
+    readonly_paths: list[str] | dict[str, str] # Supports src:dst mapping
+    network: bool
+
+
 class ExtensionConfig(TypedDict):
     """Configuration for a single extension managed by PyIsolate."""
 
@@ -39,3 +45,9 @@ class ExtensionConfig(TypedDict):
 
     share_cuda_ipc: bool
     """If True, attempt CUDA IPC-based tensor transport (Linux only, requires ``share_torch``)."""
+
+    sandbox: dict[str, Any]
+    """Configuration for the sandbox (e.g. writable_paths, network access)."""
+
+    env: dict[str, str]
+    """Environment variable overrides for the child process."""

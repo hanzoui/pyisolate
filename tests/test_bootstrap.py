@@ -41,11 +41,11 @@ def clear_registry():
 
 def test_bootstrap_applies_snapshot(monkeypatch, tmp_path):
     fake_adapter = FakeAdapter()
-    monkeypatch.setattr(bootstrap, "load_adapter", lambda name: fake_adapter)
+    monkeypatch.setattr(bootstrap, "_rehydrate_adapter", lambda name: fake_adapter)
 
     snapshot = {
         "sys_path": [str(tmp_path / "foo")],
-        "adapter_name": "fake",
+        "adapter_ref": "fake:FakeAdapter",
     }
     monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", json.dumps(snapshot))
 
@@ -77,7 +77,8 @@ def test_bootstrap_bad_json(monkeypatch):
 
 
 def test_bootstrap_missing_adapter(monkeypatch):
-    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", json.dumps({"adapter_name": "missing"}))
-    monkeypatch.setattr(bootstrap, "load_adapter", lambda name: (_ for _ in ()).throw(ValueError("nope")))
+    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", json.dumps({"adapter_ref": "missing"}))
+    monkeypatch.setattr(bootstrap, "_rehydrate_adapter",
+        lambda name: (_ for _ in ()).throw(ValueError("nope")))
     with pytest.raises(ValueError):
         bootstrap.bootstrap_child()

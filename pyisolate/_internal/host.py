@@ -8,7 +8,7 @@ import tempfile
 import threading
 from logging.handlers import QueueListener
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Generic, Optional, TypeVar, cast
 
 from ..config import ExtensionConfig
 from ..shared import ExtensionBase
@@ -22,10 +22,10 @@ from .environment import (
 )
 from .rpc_protocol import AsyncRPC
 from .rpc_transports import JSONSocketTransport
-from .tensor_serializer import register_tensor_serializer
-from .torch_utils import probe_cuda_ipc_support
 from .sandbox import build_bwrap_command
 from .sandbox_detect import detect_sandbox_capability
+from .tensor_serializer import register_tensor_serializer
+from .torch_utils import probe_cuda_ipc_support
 
 __all__ = [
     "Extension",
@@ -215,6 +215,12 @@ class Extension(Generic[T]):
         # Terminate process
         if hasattr(self, "proc") and self.proc:
             try:
+                # Attempt graceful exit via RPC closure first
+                try:
+                    self.proc.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
                 if self.proc.poll() is None:
                     self.proc.terminate()
                     try:
@@ -316,6 +322,10 @@ class Extension(Generic[T]):
                     f"Details: {cap.restriction_model} - {cap.raw_error}"
                 )
 
+            # Apply env overrides BEFORE building cmd or bwrap env
+            if "env" in self.config:
+                env.update(self.config["env"])
+
             # 2. Build Bwrap Command
             # We need to construct the SandboxConfig from self.config if present
             sandbox_config = self.config.get("sandbox", {})
@@ -327,45 +337,46 @@ class Extension(Generic[T]):
             # because the isolated venv is often a thin venv sharing deps or expecting them.
             import site
             extra_binds = []
-            
+
             # Add standard site-packages
             site_packages = site.getsitepackages()
             for sp in site_packages:
                 if os.path.exists(sp):
                     extra_binds.append(sp)
-            
+
             # Also add user site-packages just in case
             user_site = site.getusersitepackages()
             if isinstance(user_site, str) and os.path.exists(user_site):
                 extra_binds.append(user_site)
-                
+
             cmd = build_bwrap_command(
                 python_exe=python_exe,
                 module_path=self.module_path,
-                venv_path=self.venv_path,
+                venv_path=str(self.venv_path),
                 uds_address=uds_path,
-                sandbox_config=sandbox_config,
+                sandbox_config=cast(dict[str, Any], sandbox_config),
                 allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
                 restriction_model=cap.restriction_model,
+                env_overrides=self.config.get("env"),
             )
-            
+
             # INSTRUMENTATION: LOG THE EXACT COMMAND
             # logger.error("!" * 80)
             # logger.error(f"[BWRAP-DEBUG] Launching CMD: {' '.join(cmd)}")
             # logger.error("!" * 80)
-            
+
             # bwrap uses --setenv to pass variables, so the `env` arg to Popen
 
-            
+
             # bwrap uses --setenv to pass variables, so the `env` arg to Popen
             # only affects the bwrap process itself (path lookup, etc), not the child.
             # We must NOT pass these vars in `env` because they are already in `cmd`.
             # However, keeping them in `env` is harmless and ensures bwrap has a sane env.
-            
+
         else:
             # Non-Linux (Windows/Mac) - Fallback to direct launch
             cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
-            
+
             env["PYISOLATE_UDS_ADDRESS"] = uds_path
             env["PYISOLATE_CHILD"] = "1"
             env["PYISOLATE_EXTENSION"] = self.name
@@ -374,7 +385,7 @@ class Extension(Generic[T]):
 
         # Launch process
         # logger.error(f"[BWRAP-DEBUG] Final subprocess.Popen args: {cmd}")
-        
+
         proc = subprocess.Popen(
             cmd,
             env=env,

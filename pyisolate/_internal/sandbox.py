@@ -1,9 +1,8 @@
 import os
 import sys
-import subprocess
-import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
 from .sandbox_detect import RestrictionModel
 
 # ---------------------------------------------------------------------------
@@ -51,8 +50,9 @@ def build_bwrap_command(
     venv_path: str,
     uds_address: str,
     allow_gpu: bool = False,
-    sandbox_config: dict[str, Any] | None = None,
+    sandbox_config: Optional[dict[str, Any]] = None,
     restriction_model: RestrictionModel = RestrictionModel.NONE,
+    env_overrides: Optional[dict[str, str]] = None,
 ) -> list[str]:
     """Build the bubblewrap command for launching a sandboxed process.
 
@@ -78,7 +78,7 @@ def build_bwrap_command(
     """
     if sandbox_config is None:
         sandbox_config = {}
-    
+
     cmd = ["bwrap"]
 
     # Namespace Isolation Logic
@@ -86,12 +86,12 @@ def build_bwrap_command(
     # We attempt full user namespace isolation (--unshare-user) if possible.
     # This allows us to map UIDs and isolate the process fully.
     # However, modern distros often restrict this (AppArmor, sysctl).
-    
+
     if restriction_model == RestrictionModel.NONE:
         # Full isolation available
         cmd.extend(["--unshare-user", "--unshare-pid"])
-        # We do NOT unshare-ipc because CUDA shared memory (legacy) and 
-        # Python SharedMemory lease require /dev/shm access in the host namespace 
+        # We do NOT unshare-ipc because CUDA shared memory (legacy) and
+        # Python SharedMemory lease require /dev/shm access in the host namespace
         # (or a shared namespace). Since we bind /dev/shm, we keep IPC shared.
     else:
         # Run in degraded mode (no user/pid namespace)
@@ -100,7 +100,7 @@ def build_bwrap_command(
 
     # New session (detach from terminal)
     cmd.append("--new-session")
-    
+
     # Ensure child dies when parent dies (prevent zombie processes)
     cmd.append("--die-with-parent")
 
@@ -139,7 +139,7 @@ def build_bwrap_command(
             "/opt/cuda",              # Alternative CUDA location
             "/run/nvidia-persistenced",  # Persistence daemon
         }
-        
+
         # Add CUDA_HOME if set and not in /usr (redundant)
         cuda_home = os.environ.get("CUDA_HOME")
         if cuda_home:
@@ -148,8 +148,8 @@ def build_bwrap_command(
         for cuda_path in cuda_paths:
             if os.path.exists(cuda_path):
                  # Skip if already covered by /usr bind
-                if cuda_path.startswith("/usr/") and not cuda_path.startswith("/usr/local/"): 
-                     # Actually /usr/local is in /usr. 
+                if cuda_path.startswith("/usr/") and not cuda_path.startswith("/usr/local/"):
+                     # Actually /usr/local is in /usr.
                      # Safe heuristic: if it starts with /usr, we assume covered.
                      continue
                 cmd.extend(["--ro-bind", cuda_path, cuda_path])
@@ -163,9 +163,17 @@ def build_bwrap_command(
     for path in sandbox_config.get("writable_paths", []):
         if os.path.exists(path):
             cmd.extend(["--bind", path, path])
-    for path in sandbox_config.get("readonly_paths", []):
-        if os.path.exists(path):
-            cmd.extend(["--ro-bind", path, path])
+
+    ro_paths = sandbox_config.get("readonly_paths", [])
+    if isinstance(ro_paths, list):
+        for path in ro_paths:
+            if os.path.exists(path):
+                cmd.extend(["--ro-bind", path, path])
+    elif isinstance(ro_paths, dict):
+        for src, dst in ro_paths.items():
+            if os.path.exists(src):
+                cmd.extend(["--ro-bind", src, dst])
+
 
     # ---------------------------------------------------------------------------
     # CRITICAL: BINDING HOST DEPENDENCIES (Refactor Branch Logic)
@@ -187,7 +195,7 @@ def build_bwrap_command(
 
     # 3. ComfyUI package path: READ-ONLY (needed for comfy.isolation.adapter)
     try:
-        import comfy
+        import comfy  # type: ignore[import]
         if hasattr(comfy, "__file__") and comfy.__file__:
             comfy_path = Path(comfy.__file__).parent.parent.resolve()
         elif hasattr(comfy, "__path__"):
@@ -195,7 +203,7 @@ def build_bwrap_command(
             comfy_path = Path(list(comfy.__path__)[0]).parent.resolve()
         else:
              comfy_path = None
-        
+
         if comfy_path:
             cmd.extend(["--ro-bind", str(comfy_path), str(comfy_path)])
     except Exception:
@@ -221,18 +229,18 @@ def build_bwrap_command(
     # Environment variables
     cmd.extend(["--setenv", "PYISOLATE_UDS_ADDRESS", uds_address])
     cmd.extend(["--setenv", "PYISOLATE_CHILD", "1"])
-    
+
     # 4. Set PYTHONPATH to include pyisolate package
     # This ensures the child can find 'pyisolate' even if not installed in its venv
     pyisolate_parent = str(pyisolate_path)
     # Start with our explicitly bound package
     new_pythonpath_parts = [pyisolate_parent]
-    
+
     # Check existing PYTHONPATH
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     if existing_pythonpath:
         new_pythonpath_parts.append(existing_pythonpath)
-        
+
     cmd.extend(["--setenv", "PYTHONPATH", ":".join(new_pythonpath_parts)])
 
     # Inherit select environment variables
@@ -240,7 +248,7 @@ def build_bwrap_command(
     for env_var in ["PATH", "HOME", "LANG", "LC_ALL"]:
         if env_var in os.environ:
              cmd.extend(["--setenv", env_var, os.environ[env_var]])
-        
+
     # CUDA/GPU environment variables (critical for GPU access)
     cuda_env_vars = [
         "CUDA_HOME",
@@ -251,10 +259,21 @@ def build_bwrap_command(
         "PYTORCH_CUDA_ALLOC_CONF",
         "TORCH_CUDA_ARCH_LIST",
         "PYISOLATE_ENABLE_CUDA_IPC",
+        "PYISOLATE_ENABLE_CUDA_IPC",
     ]
     for env_var in cuda_env_vars:
         if env_var in os.environ:
             cmd.extend(["--setenv", env_var, os.environ[env_var]])
+
+    # Coverage / Profiling forwarding
+    for key, val in os.environ.items():
+        if key.startswith("COV_") or key.startswith("COVERAGE_"):
+            cmd.extend(["--setenv", key, val])
+
+    # Env overrides from config
+    if env_overrides:
+        for key, val in env_overrides.items():
+            cmd.extend(["--setenv", key, val])
 
     # Command to run (Corrected to uds_client for main branch architecture)
     cmd.extend([python_exe, "-m", "pyisolate._internal.uds_client"])

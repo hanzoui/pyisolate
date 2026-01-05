@@ -415,24 +415,22 @@ class AsyncRPC:
                         logger.debug(f"RPC {self.id} shutting down ({exc})")
                     else:
                         logger.error(f"RPC recv failed (rpc_id={self.id}): {exc}")
-                    
+
                     # CRITICAL FIX: Fail all pending requests when connection dies
                     # preventing indefinite hangs in the host
                     error_msg = f"RPC connection lost: {exc}"
                     with self.lock:
                         pending_items = list(self.pending.values())
                         self.pending.clear()
-                    
+
                     for item in pending_items:
                         fut = item["future"]
                         calling_loop = item["calling_loop"]
                         if not calling_loop.is_closed():
-                            try:
+                            with contextlib.suppress(RuntimeError):
                                 calling_loop.call_soon_threadsafe(
                                     fut.set_exception, ConnectionError(error_msg)
                                 )
-                            except RuntimeError:
-                                pass
                     break
 
                 if item is None:

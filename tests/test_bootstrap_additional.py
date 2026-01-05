@@ -28,10 +28,12 @@ def test_bootstrap_child_missing_snapshot_returns_none(monkeypatch):
 def test_bootstrap_child_json_payload_adapter_none(monkeypatch):
     payload = json.dumps({
         "sys_path": [],
-        "adapter_name": "demo",
+        "adapter_ref": "demo:Adapter",
     })
     monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", payload)
-    monkeypatch.setattr(bootstrap, "load_adapter", lambda name=None: None)
+    # Simulate failed rehydration
+    monkeypatch.setattr(bootstrap, "_rehydrate_adapter",
+        lambda name: (_ for _ in ()).throw(ValueError("failed")))
     with pytest.raises(ValueError):
         bootstrap.bootstrap_child()
 

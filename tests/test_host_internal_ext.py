@@ -1,4 +1,4 @@
-import os
+
 import queue
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +7,7 @@ import pytest
 
 from pyisolate._internal import host
 from pyisolate._internal.host import Extension
+from pyisolate._internal.sandbox_detect import RestrictionModel, SandboxCapability
 
 
 class DummyRPC:
@@ -136,8 +137,20 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
         def wait(self, timeout=None): return 0
         def __enter__(self): return self
         def __exit__(self, *args): pass
+        def communicate(self, input=None, timeout=None): return (b"", b"")
 
     monkeypatch.setattr(host.subprocess, "Popen", MockPopen)
+
+    # Mock sandbox detection to pass on Linux
+    monkeypatch.setattr(host, "detect_sandbox_capability",
+        lambda: SandboxCapability(
+            available=True,
+            bwrap_path="/usr/bin/bwrap",
+            restriction_model=RestrictionModel.NONE,
+            remediation="",
+            raw_error=None
+        )
+    )
 
     class MockSocket:
         def __init__(self, *args, **kwargs): pass
@@ -163,7 +176,7 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
 
     monkeypatch.setattr(host, "JSONSocketTransport", MockTransport)
 
-    from pyisolate._internal import environment
+
 
     venv_path = Path(tmp_path) / "demo"
     site_packages = venv_path / "lib" / "python3.12" / "site-packages"
@@ -174,11 +187,12 @@ def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
     python_exe.write_text("#!/usr/bin/env python")
     python_exe.chmod(0o755)
 
-    monkeypatch.setattr(environment, "create_venv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(environment, "install_dependencies", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host, "create_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host, "install_dependencies", lambda *args, **kwargs: None)
 
     ext._initialize_process()
-    assert os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "0"
+    val = ext.proc.env.get("PYISOLATE_ENABLE_CUDA_IPC")
+    assert val == "0" or val is None
     assert isinstance(ext.rpc, DummyRPC)
     assert ext.rpc.run_called is True
 

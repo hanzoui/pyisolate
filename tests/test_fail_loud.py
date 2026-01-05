@@ -1,37 +1,35 @@
+
 import pytest
 
-from pyisolate._internal import bootstrap, loader
+from pyisolate._internal import bootstrap
 
 
-def test_bootstrap_missing_adapter_fails(monkeypatch):
-    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", '{"adapter_name": "missing"}')
-    monkeypatch.setattr(bootstrap, "load_adapter", lambda name: (_ for _ in ()).throw(ValueError("missing")))
+def test_bootstrap_malformed_snapshot_fails(monkeypatch):
+    """Test that a malformed JSON snapshot raises ValueError."""
+    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", '{invalid_json')
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Failed to decode PYISOLATE_HOST_SNAPSHOT"):
         bootstrap.bootstrap_child()
 
+def test_bootstrap_missing_adapter_ref_fails(monkeypatch):
+    """Test that valid JSON without adapter_ref returns None (no adapter loaded)."""
+    # If no adapter_ref is present, bootstrap returns None, it doesn't fail unless
+    # adapter_ref WAS present but failed to load.
+    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", '{"sys_path": []}')
 
-def test_load_adapter_ambiguous(monkeypatch):
-    class DummyEP:
-        def __init__(self, name):
-            self.name = name
-        def load(self):
-            return object
+    adapter = bootstrap.bootstrap_child()
+    assert adapter is None
 
-    class EPObj:
-        def __init__(self, eps):
-            self._eps = eps
-        def select(self, **kwargs):
-            return self._eps
+def test_bootstrap_bad_adapter_ref_fails(monkeypatch):
+    """Test that a valid snapshot with a bad adapter_ref logs a warning
+    but might not crash unless critical logic depends on it.
+    """
+    # The current logic in bootstrap.py catches Exception and logs a warning for rehydration failures.
+    # It then raises ValueError if "snapshot contained adapter info but adapter could not be loaded".
 
-    eps = [DummyEP("a"), DummyEP("b")]
+    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", '{"adapter_ref": "bad.module:BadClass"}')
 
-    def fake_entry_points():
-        return EPObj(eps)
+    # We expect a ValueError because adapter_ref was provided but failed to load
+    with pytest.raises(ValueError, match="Snapshot contained adapter info but adapter could not be loaded"):
+        bootstrap.bootstrap_child()
 
-    import importlib.metadata
-    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
-    monkeypatch.setattr(loader, "entry_points", fake_entry_points, raising=False)
-
-    with pytest.raises(ValueError):
-        loader.load_adapter()

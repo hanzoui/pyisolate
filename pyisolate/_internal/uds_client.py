@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import signal  # <--- CRITICAL IMPORT
 import socket
 import sys
 from contextlib import AbstractContextManager as ContextManager
@@ -24,7 +25,6 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-
     from ..config import ExtensionConfig
 
 from .tensor_serializer import register_tensor_serializer
@@ -34,7 +34,15 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Main entry point for isolated child processes."""
-    # Configure logging format to match host
+    
+    def handle_signal(signum: int, frame: Any) -> None:
+        logger.info("Received signal %s. Initiating graceful shutdown...", signum)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    # -------------------------------------------------------------------------
+
     logging.basicConfig(
         format='%(message)s',
         level=logging.INFO,
@@ -208,6 +216,8 @@ async def _async_uds_entrypoint(
             rpc.run()
             await extension.on_module_loaded(module)
             await rpc.run_until_stopped()
+        except asyncio.CancelledError:
+            pass
         except Exception as exc:
             logger.error(
                 "Extension module loading/execution failed for %s: %s",

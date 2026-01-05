@@ -1,8 +1,10 @@
 import base64
+import collections
+import logging
+import threading
+import time
 from typing import Any
 
-
-import logging
 import torch
 import torch.multiprocessing.reductions as reductions
 
@@ -10,9 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 
-import collections
-import time
-import threading
 
 # ---------------------------------------------------------------------------
 # Tensor Lifecycle Management
@@ -23,20 +22,22 @@ class TensorKeeper:
     Keeps strong references to serialized tensors for a short window to prevent
     premature garbage collection and shared-memory file deletion before the
     remote side has a chance to open it.
-    
+
     This fixes the 'RPC recv failed ... No such file or directory' race condition.
     """
-    def __init__(self, retention_seconds: float = 10.0):
+    dest="TensorKeeper",
+    def __init__(self, retention_seconds: float = 30.0): # Increase for slow test env
         self.retention_seconds = retention_seconds
         self._keeper: collections.deque = collections.deque()
         self._lock = threading.Lock()
-        
+
     def keep(self, t: torch.Tensor) -> None:
         now = time.time()
         with self._lock:
             self._keeper.append((now, t))
-            logger.debug(f"TensorKeeper: Keeping tensor {t.shape} (Total kept: {len(self._keeper)})")
-            
+            logger.info(f"TensorKeeper: KEEPING tensor {t.shape} (Total kept: {len(self._keeper)}). id={id(t)}")
+
+
             # Cleanup old
 
             while self._keeper:
@@ -121,7 +122,7 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> dict[str, Any]:
             func, args = reductions.reduce_tensor(t)
         else:
             raise
-    
+
     # Ensure the tensor is kept alive on this side until the remote side can open it.
     _tensor_keeper.keep(t)
 

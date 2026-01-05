@@ -1,7 +1,7 @@
 """Tests for RPC graceful shutdown behavior."""
 
 import asyncio
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
@@ -56,7 +56,7 @@ class BlockingMockTransport(RPCTransport):
         while not self.closed:
             time.sleep(0.01)
         raise ConnectionError("Closed during block")
-    
+
     def close(self):
         self.closed = True
 
@@ -74,36 +74,36 @@ async def test_shutdown_sets_flag():
 async def test_shutdown_suppresses_connection_error_logs(caplog):
     """Test that connection errors are logged as debug, not error, during shutdown."""
     import logging
-    
+
     # Ensure the specific logger is at DEBUG level
     logger_name = "pyisolate._internal.rpc_protocol"
     logging.getLogger(logger_name).setLevel(logging.DEBUG)
     caplog.set_level(logging.DEBUG, logger=logger_name)
-    
+
     # We need to simulate the receive thread behavior
     transport = MockTransport()
     # Mock recv to raise an exception immediately then return None (stop loop)
     # Using side_effect with an iterable
     transport.recv = Mock(side_effect=[ConnectionError("Socket closed"), None])
-    
+
     rpc = AsyncRPC(transport=transport)
     rpc.default_loop = asyncio.get_running_loop()
-    
+
     # Enable shutdown mode
     rpc.shutdown()
     assert rpc._stopping is True
-    
+
     # Run _recv_thread synchronously for a single iteration (due to side effect)
     rpc._recv_thread()
-    
+
     # Verify logs
     # We expect a DEBUG log properly formatted, NOT an ERROR log
     error_logs = [r for r in caplog.records if r.levelno >= logging.ERROR and r.name == logger_name]
     debug_logs = [r for r in caplog.records if r.levelno == logging.DEBUG and "shutting down" in r.message]
-    
+
     # Check if we got ANY logs from that logger just to be sure
     all_rpc_logs = [r.message for r in caplog.records if r.name == logger_name]
-    
+
     assert len(error_logs) == 0, f"Should handle shutdown gracefully, but got errors: {error_logs}"
     assert len(debug_logs) > 0, f"Should have logged debug message. Got: {all_rpc_logs}"
     assert "Socket closed" in debug_logs[0].message
@@ -114,20 +114,20 @@ async def test_shutdown_suppresses_connection_error_logs(caplog):
 async def test_shutdown_cancels_run_until_stopped():
     """Test that shutdown unblocks run_until_stopped."""
     rpc = AsyncRPC(transport=MockTransport())
-    
+
     # Create the future manually as run() would
     rpc.blocking_future = asyncio.Future()
-    
+
     # Create a task that waits for stop
     stop_task = asyncio.create_task(rpc.run_until_stopped())
-    
+
     # Give it a moment to suspend
     await asyncio.sleep(0.01)
     assert not stop_task.done()
-    
+
     # Trigger shutdown
     rpc.shutdown()
-    
+
     # Should be done now
     await asyncio.wait_for(stop_task, timeout=1.0)
     assert stop_task.done()
