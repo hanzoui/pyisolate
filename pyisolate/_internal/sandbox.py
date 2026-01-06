@@ -154,10 +154,12 @@ def build_bwrap_command(
                      continue
                 cmd.extend(["--ro-bind", cuda_path, cuda_path])
 
-    # Network: ISOLATED by default (as per tests)
-    cmd.append("--unshare-net")
-    # If loopback is needed, we might need --share-net or explicit loopback setup.
-    # But tests enforce --unshare-net.
+    # Network Isolation
+    # Default: ISOLATED (--unshare-net) unless explicitly allowed in config
+    allow_network = sandbox_config.get("network", False)
+    if not allow_network:
+        cmd.append("--unshare-net")
+    # If allow_network is True, we simply don't unshare, inheriting host network.
 
     # Additional paths from config (user-specified)
     for path in sandbox_config.get("writable_paths", []):
