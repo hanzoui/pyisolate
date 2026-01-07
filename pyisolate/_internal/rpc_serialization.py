@@ -318,7 +318,7 @@ def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
             converted = {k: _tensor_to_cuda(v, device) for k, v in obj["data"].items()}
             return AttrDict(converted)
         converted = {k: _tensor_to_cuda(v, device) for k, v in obj.items()}
-        return AttrDict(converted)
+        return converted
 
     if isinstance(obj, (list, tuple)):
         converted_seq = [_tensor_to_cuda(item, device) for item in obj]
