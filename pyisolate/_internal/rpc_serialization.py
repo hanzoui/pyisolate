@@ -292,7 +292,7 @@ def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
             from .remote_handle import RemoteObjectHandle
             return RemoteObjectHandle(obj.object_id, obj.type_name)
 
-        # CRITICAL FIX: Check for embedded remote handle
+        # Check for embedded remote handle
         handle = getattr(obj, "_pyisolate_remote_handle", None)
         if handle is not None:
             # Recursively unwrap the handle (it's also a SimpleNamespace)

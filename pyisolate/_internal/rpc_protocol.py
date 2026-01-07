@@ -183,7 +183,7 @@ class AsyncRPC:
         return callback_id
 
     async def call_callback(self, callback_id: str, *args: Any, **kwargs: Any) -> Any:
-        # [ISOLATION] Eager Serialization (Fix Race Condition)
+        # Eager Serialization (Race Condition Fix)
         # Serialize tensors in the MAIN THREAD to ensure validity before queuing.
         # This prevents "cudaErrorMapBufferObjectFailed" where the tensor might be
         # freed/mutated by the main thread before the background sender gets to it.
@@ -224,7 +224,7 @@ class AsyncRPC:
                     raise ValueError(f"{name} is not a coroutine function")
 
                 async def method(*args: Any, **kwargs: Any) -> Any:
-                    # [ISOLATION] Eager Serialization (Fix Race Condition)
+                    # Eager Serialization (Race Condition Fix)
                     serialized_args = serialize_for_isolation(args)
                     serialized_kwargs = serialize_for_isolation(kwargs)
 
@@ -427,7 +427,7 @@ class AsyncRPC:
                     else:
                         logger.error(f"RPC recv failed (rpc_id={self.id}): {exc}")
 
-                    # CRITICAL FIX: Fail all pending requests when connection dies
+                    # Fail all pending requests when connection dies
                     # preventing indefinite hangs in the host
                     error_msg = f"RPC connection lost: {exc}"
                     with self.lock:
@@ -554,7 +554,7 @@ class AsyncRPC:
                     with self.lock:
                         self.pending[call_id] = typed_item
 
-                    # [ISOLATION] Data is already serialized eagerly in main thread
+                    # Data is already serialized eagerly in main thread
                     serialized_args = typed_item["args"]
                     serialized_kwargs = typed_item["kwargs"]
                     
@@ -587,7 +587,7 @@ class AsyncRPC:
                     with self.lock:
                         self.pending[call_id] = typed_item
                     
-                    # [ISOLATION] Data is already serialized eagerly in main thread
+                    # Data is already serialized eagerly in main thread
                     serialized_args = typed_item["args"]
                     serialized_kwargs = typed_item["kwargs"]
 
