@@ -161,25 +161,8 @@ def build_bwrap_command(
         cmd.append("--unshare-net")
     # If allow_network is True, we simply don't unshare, inheriting host network.
 
-    # Additional paths from config (user-specified)
-    for path in sandbox_config.get("writable_paths", []):
-        if os.path.exists(path):
-            cmd.extend(["--bind", path, path])
+    # MOVED: path bindings moved to end to prevent masking by RO binds
 
-    ro_paths = sandbox_config.get("readonly_paths", [])
-    if isinstance(ro_paths, list):
-        for path in ro_paths:
-            if os.path.exists(path):
-                cmd.extend(["--ro-bind", path, path])
-    elif isinstance(ro_paths, dict):
-        for src, dst in ro_paths.items():
-            if os.path.exists(src):
-                cmd.extend(["--ro-bind", src, dst])
-
-
-    # ---------------------------------------------------------------------------
-    # CRITICAL: BINDING HOST DEPENDENCIES (Refactor Branch Logic)
-    # ---------------------------------------------------------------------------
 
     # 1. Host venv site-packages: READ-ONLY (for share_torch inheritance via .pth file)
     # The child venv has a .pth file pointing to host site-packages for torch sharing
@@ -227,6 +210,27 @@ def build_bwrap_command(
 
     if uds_dir and os.path.exists(uds_dir):
         cmd.extend(["--bind", uds_dir, uds_dir])
+
+    # ---------------------------------------------------------------------------
+    # CONFIG OVERRIDES (Must happen LAST to override default RO binds)
+    # ---------------------------------------------------------------------------
+
+    # 1. Writable paths from config (user-specified)
+    # Placed here so they can punch holes in RO binds (e.g. ComfyUI/temp inside RO ComfyUI)
+    for path in sandbox_config.get("writable_paths", []):
+        if os.path.exists(path):
+            cmd.extend(["--bind", path, path])
+
+    # 2. Read-only paths from config
+    ro_paths = sandbox_config.get("readonly_paths", [])
+    if isinstance(ro_paths, list):
+        for path in ro_paths:
+            if os.path.exists(path):
+                cmd.extend(["--ro-bind", path, path])
+    elif isinstance(ro_paths, dict):
+        for src, dst in ro_paths.items():
+            if os.path.exists(src):
+                cmd.extend(["--ro-bind", src, dst])
 
     # Environment variables
     cmd.extend(["--setenv", "PYISOLATE_UDS_ADDRESS", uds_address])
