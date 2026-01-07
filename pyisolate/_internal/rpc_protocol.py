@@ -183,6 +183,13 @@ class AsyncRPC:
         return callback_id
 
     async def call_callback(self, callback_id: str, *args: Any, **kwargs: Any) -> Any:
+        # [ISOLATION] Eager Serialization (Fix Race Condition)
+        # Serialize tensors in the MAIN THREAD to ensure validity before queuing.
+        # This prevents "cudaErrorMapBufferObjectFailed" where the tensor might be
+        # freed/mutated by the main thread before the background sender gets to it.
+        serialized_args = serialize_for_isolation(args)
+        serialized_kwargs = serialize_for_isolation(kwargs)
+
         loop = asyncio.get_event_loop()
         pending_request = RPCPendingRequest(
             kind="callback",
@@ -191,8 +198,8 @@ class AsyncRPC:
             calling_loop=loop,
             future=loop.create_future(),
             method="__call__",
-            args=args,
-            kwargs=kwargs,
+            args=serialized_args,
+            kwargs=serialized_kwargs,
         )
         # Use outbox pattern to avoid blocking RPC event loop.
         # Direct queue.put() would block if queue is full, stalling all RPC operations.
@@ -217,6 +224,10 @@ class AsyncRPC:
                     raise ValueError(f"{name} is not a coroutine function")
 
                 async def method(*args: Any, **kwargs: Any) -> Any:
+                    # [ISOLATION] Eager Serialization (Fix Race Condition)
+                    serialized_args = serialize_for_isolation(args)
+                    serialized_kwargs = serialize_for_isolation(kwargs)
+
                     loop = asyncio.get_event_loop()
                     pending_request = RPCPendingRequest(
                         kind="call",
@@ -225,8 +236,8 @@ class AsyncRPC:
                         calling_loop=loop,
                         future=loop.create_future(),
                         method=name,
-                        args=args,
-                        kwargs=kwargs,
+                        args=serialized_args,
+                        kwargs=serialized_kwargs,
                     )
                     this.outbox.put(pending_request)
                     return await pending_request["future"]
@@ -543,8 +554,10 @@ class AsyncRPC:
                     with self.lock:
                         self.pending[call_id] = typed_item
 
-                    serialized_args = serialize_for_isolation(typed_item["args"])
-                    serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
+                    # [ISOLATION] Data is already serialized eagerly in main thread
+                    serialized_args = typed_item["args"]
+                    serialized_kwargs = typed_item["kwargs"]
+                    
                     request_msg: RPCMessage = RPCRequest(
                         kind="call",
                         object_id=typed_item["object_id"],
@@ -573,8 +586,11 @@ class AsyncRPC:
                     id_gen += 1
                     with self.lock:
                         self.pending[call_id] = typed_item
-                    serialized_args = serialize_for_isolation(typed_item["args"])
-                    serialized_kwargs = serialize_for_isolation(typed_item["kwargs"])
+                    
+                    # [ISOLATION] Data is already serialized eagerly in main thread
+                    serialized_args = typed_item["args"]
+                    serialized_kwargs = typed_item["kwargs"]
+
                     request_msg = RPCCallback(
                         kind="callback",
                         callback_id=typed_item["object_id"],
