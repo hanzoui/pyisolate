@@ -19,8 +19,8 @@ from .torch_utils import get_torch_ecosystem_packages
 
 logger = logging.getLogger(__name__)
 
-_DANGEROUS_PATTERNS = ("&&", "||", ";", "|", "`", "$", "\n", "\r", "\0")
-_UNSAFE_CHARS = frozenset(' \t\n\r;|&$`()<>"\'\\!{}[]*?~#%=,:')
+_DANGEROUS_PATTERNS = ("&&", "||", "|", "`", "$", "\n", "\r", "\0")
+_UNSAFE_CHARS = frozenset(' \t\n\r|&$`()<>"\'\\!{}[]*?~#%=,')
 
 
 def normalize_extension_name(name: str) -> str:
