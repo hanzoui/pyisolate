@@ -273,7 +273,7 @@ def build_bwrap_command(
 
     # Coverage / Profiling forwarding
     for key, val in os.environ.items():
-        if key.startswith("COV_") or key.startswith("COVERAGE_"):
+        if key.startswith(("COV_", "COVERAGE_")):
             cmd.extend(["--setenv", key, val])
 
     # Env overrides from config

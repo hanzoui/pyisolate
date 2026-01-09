@@ -1,5 +1,7 @@
 import pytest
+
 from tests.harness.host import ReferenceHost
+
 
 @pytest.fixture
 async def reference_host():

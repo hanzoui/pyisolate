@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from ._internal.rpc_protocol import ProxiedSingleton

@@ -1,7 +1,8 @@
 import logging
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
+
 from pyisolate.shared import ExtensionBase
 
 try:
@@ -12,10 +13,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Mock singletons for testing inheritance/proxying if needed, 
+# Mock singletons for testing inheritance/proxying if needed,
 # though normally we access host singletons via RPC proxies passed in or looked up.
-# For this reference extension, we will assume we get proxies via method arguments 
-# or look them up from a registry if implemented. 
+# For this reference extension, we will assume we get proxies via method arguments
+# or look them up from a registry if implemented.
 
 class ReferenceTestExtension(ExtensionBase):
     """
@@ -42,15 +43,15 @@ class ReferenceTestExtension(ExtensionBase):
         """
         if not HAS_TORCH:
             return "NO_TORCH"
-        
+
         if not isinstance(tensor, torch.Tensor):
             logger.error(f"Expected Tensor, got {type(tensor)}")
             raise TypeError(f"Expected torch.Tensor, got {type(tensor)}")
-            
+
         logger.info(f"[TestPkg] Echoing tensor: shape={tensor.shape}, device={tensor.device}")
         return tensor
 
-    async def allocate_cuda(self, size_mb: int) -> Dict[str, Any]:
+    async def allocate_cuda(self, size_mb: int) -> dict[str, Any]:
         """
         Allocates a tensor on CUDA to verify GPU access.
         """
@@ -59,7 +60,7 @@ class ReferenceTestExtension(ExtensionBase):
 
         numel = size_mb * 1024 * 1024 // 4 # float32 = 4 bytes
         t = torch.zeros(numel, device="cuda", dtype=torch.float32)
-        
+
         return {
             "device": str(t.device),
             "allocated_bytes": torch.cuda.memory_allocated(),
@@ -80,7 +81,7 @@ class ReferenceTestExtension(ExtensionBase):
         Attempts to read a file.
         """
         logger.info(f"[TestPkg] Attempting to read from {path}")
-        with open(path, "r") as f:
+        with open(path) as f:
             return f.read()
 
     async def crash_me(self) -> None:
@@ -88,9 +89,6 @@ class ReferenceTestExtension(ExtensionBase):
         logger.info("[TestPkg] Goodbye cruel world!")
         os._exit(42)
 
-    async def get_env_var(self, key: str) -> Optional[str]:
-        return os.environ.get(key)
-        
     async def get_env_var(self, key: str) -> Optional[str]:
         return os.environ.get(key)
 

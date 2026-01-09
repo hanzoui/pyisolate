@@ -557,7 +557,7 @@ class AsyncRPC:
                     # Data is already serialized eagerly in main thread
                     serialized_args = typed_item["args"]
                     serialized_kwargs = typed_item["kwargs"]
-                    
+
                     request_msg: RPCMessage = RPCRequest(
                         kind="call",
                         object_id=typed_item["object_id"],
@@ -586,7 +586,7 @@ class AsyncRPC:
                     id_gen += 1
                     with self.lock:
                         self.pending[call_id] = typed_item
-                    
+
                     # Data is already serialized eagerly in main thread
                     serialized_args = typed_item["args"]
                     serialized_kwargs = typed_item["kwargs"]

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Main entry point for isolated child processes."""
-    
+
     def handle_signal(signum: int, frame: Any) -> None:
         logger.info("Received signal %s. Initiating graceful shutdown...", signum)
         raise SystemExit(0)
