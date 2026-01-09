@@ -35,7 +35,9 @@ class TensorKeeper:
         now = time.time()
         with self._lock:
             self._keeper.append((now, t))
-            logger.debug(f"TensorKeeper: KEEPING tensor {t.shape} (Total kept: {len(self._keeper)}). id={id(t)}")
+            logger.debug(
+                f"TensorKeeper: KEEPING tensor {t.shape} (Total kept: {len(self._keeper)}). id={id(t)}"
+            )
 
 
             # Cleanup old

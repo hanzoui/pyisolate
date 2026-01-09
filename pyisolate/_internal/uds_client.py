@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import os
-import signal  # <--- CRITICAL IMPORT
+import signal  # Required for graceful shutdown handling
 import socket
 import sys
 from contextlib import AbstractContextManager as ContextManager
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Main entry point for isolated child processes."""
-    
+
     def handle_signal(signum: int, frame: Any) -> None:
         logger.info("Received signal %s. Initiating graceful shutdown...", signum)
         raise SystemExit(0)
@@ -49,7 +49,7 @@ def main() -> None:
         force=True
     )
 
-    # 1. Get UDS address from environment
+    # Get UDS address from environment
     uds_address = os.environ.get("PYISOLATE_UDS_ADDRESS")
     if not uds_address:
         raise RuntimeError(
@@ -57,32 +57,32 @@ def main() -> None:
             "This module should only be invoked via host launcher."
         )
 
-    # 2. Connect to host via UDS (raw socket for JSON-RPC)
+    # Connect to host via UDS (raw socket for JSON-RPC)
     logger.debug("Connecting to host at %s", uds_address)
     client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client_sock.connect(uds_address)
 
-    # 3. Create JSON transport (NO PICKLE)
+    # Create JSON transport (no pickle)
     from .rpc_transports import JSONSocketTransport
     transport = JSONSocketTransport(client_sock)
 
-    # 4. Receive bootstrap data from host via JSON
+    # Receive bootstrap data from host via JSON
     bootstrap_data = transport.recv()
     logger.debug("Received bootstrap data")
 
-    # 5. Apply host snapshot to environment
+    # Apply host snapshot to environment
     snapshot = bootstrap_data.get("snapshot", {})
     os.environ["PYISOLATE_HOST_SNAPSHOT"] = json.dumps(snapshot)
     os.environ["PYISOLATE_CHILD"] = "1"
 
-    # 6. Bootstrap the child environment (apply sys.path, etc.)
+    # Bootstrap the child environment (apply sys.path, etc.)
     from .bootstrap import bootstrap_child
     bootstrap_child()
 
-    # 7. Import remaining dependencies after bootstrap
+    # Import remaining dependencies after bootstrap
     from ..shared import ExtensionBase
 
-    # 8. Extract configuration from bootstrap data
+    # Extract configuration from bootstrap data
     config: ExtensionConfig = bootstrap_data["config"]
     module_path: str = config["module_path"]
 
@@ -105,7 +105,7 @@ def main() -> None:
         )
         extension_type = ExtensionBase
 
-    # 9. Run the async entrypoint
+    # Run the async entrypoint
     asyncio.run(_async_uds_entrypoint(
         transport=transport,
         module_path=module_path,
@@ -164,7 +164,7 @@ async def _async_uds_entrypoint(
     from .adapter_registry import AdapterRegistry
     adapter: IsolationAdapter | None = AdapterRegistry.get()
 
-    # CRITICAL: Register serializers in child process
+    # Register serializers in child process
     if adapter:
         from .serialization_registry import SerializerRegistry
         adapter.register_serializers(SerializerRegistry.get_instance())

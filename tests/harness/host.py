@@ -1,23 +1,20 @@
+import contextlib
 import logging
 import os
-import shutil
 import sys
 import tempfile
-import time
 from pathlib import Path
-from typing import Any, List, Optional, Protocol, Type, cast
+from typing import Any, Optional, Protocol
 
 import pytest
-import yaml
-
-from pyisolate.host import Extension, ExtensionBase
-from pyisolate._internal.adapter_registry import AdapterRegistry
-from pyisolate._internal.rpc_protocol import ProxiedSingleton, AsyncRPC
-from pyisolate.config import ExtensionConfig
-from pyisolate.interfaces import IsolationAdapter, SerializerRegistryProtocol
 
 # Import the reference package path and class
 import tests.harness.test_package as test_package_module
+from pyisolate._internal.adapter_registry import AdapterRegistry
+from pyisolate._internal.rpc_protocol import AsyncRPC, ProxiedSingleton
+from pyisolate.config import ExtensionConfig
+from pyisolate.host import Extension
+from pyisolate.interfaces import SerializerRegistryProtocol
 from tests.harness.test_package import ReferenceTestExtension
 
 logger = logging.getLogger(__name__)
@@ -29,7 +26,6 @@ class TestExtensionProtocol(Protocol):
     async def write_file(self, path: str, content: str) -> str: ...
     async def read_file(self, path: str) -> str: ...
     async def crash_me(self) -> None: ...
-    async def get_env_var(self, key: str) -> Optional[str]: ...
     async def get_env_var(self, key: str) -> Optional[str]: ...
 
 
@@ -54,10 +50,9 @@ class ReferenceAdapter:
     def register_serializers(self, registry: SerializerRegistryProtocol) -> None:
         # Register torch serializers if available
         try:
-            import torch
-            from pyisolate._internal.tensor_serializer import (
-                serialize_tensor, deserialize_tensor
-            )
+            import torch  # noqa: F401
+
+            from pyisolate._internal.tensor_serializer import deserialize_tensor, serialize_tensor
             registry.register("torch.Tensor", serialize_tensor, deserialize_tensor)
         except ImportError:
             pass
@@ -79,17 +74,17 @@ class ReferenceHost:
         if use_temp_dir:
             self.temp_dir = tempfile.TemporaryDirectory(prefix="pyisolate_harness_")
             self.root_dir = Path(self.temp_dir.name)
-        
+
         # Setup shared temp for Torch file_system IPC
         self.shared_tmp = self.root_dir / "ipc_shared"
         self.shared_tmp.mkdir(parents=True, exist_ok=True)
         # Force host process (and children via inherit) to use this TMPDIR
         os.environ["TMPDIR"] = str(self.shared_tmp)
-        
+
         self.venv_root = self.root_dir / "venvs"
         self.venv_root.mkdir(parents=True, exist_ok=True)
-        
-        self.extensions: List[Extension[TestExtensionProtocol]] = []
+
+        self.extensions: list[Extension[TestExtensionProtocol]] = []
         self._adapter_registered = False
 
     def setup(self):
@@ -103,43 +98,43 @@ class ReferenceHost:
 
         # Clean up any existing adapter to ensure fresh state
         AdapterRegistry.unregister()
-        
+
         # Register our reference adapter
         self.adapter = ReferenceAdapter()
         AdapterRegistry.register(self.adapter)
         self._adapter_registered = True
-        
+
         # Ensure proper torch multiprocessing setup
         try:
             import torch.multiprocessing
             torch.multiprocessing.set_sharing_strategy('file_system')
             # set_start_method might fail if already set, which is fine
-            try:
+            with contextlib.suppress(RuntimeError):
                 torch.multiprocessing.set_start_method('spawn', force=True)
-            except RuntimeError:
-                pass
         except ImportError:
             pass
 
     def load_test_extension(
-        self, 
+        self,
         name: str = "test_ext",
         isolated: bool = True,
         share_torch: bool = True,
         share_cuda: bool = False,
-        extra_deps: List[str] = []
+        extra_deps: list[str] | None = None
     ) -> Extension[TestExtensionProtocol]:
         """
         Loads the static reference extension.
         """
         package_path = Path(test_package_module.__file__).parent.resolve()
-        
-        # We need to inject the pyisolate package itself into dependencies 
+
+        # We need to inject the pyisolate package itself into dependencies
         # so it can be installed in the isolated venv
         pyisolate_root = Path(__file__).parent.parent.parent.resolve()
-        
+
+        if extra_deps is None:
+            extra_deps = []
         deps = [f"-e {pyisolate_root}"] + extra_deps
-        
+
         if share_torch:
             pass # We rely on site-packages inheritance for torch usually
 
@@ -167,7 +162,7 @@ class ReferenceHost:
             config=ext_config,
             venv_root_path=str(self.venv_root)
         )
-        
+
         ext.ensure_process_started()
         self.extensions.append(ext)
         return ext
@@ -175,14 +170,14 @@ class ReferenceHost:
     async def cleanup(self):
         """Stop all extensions and cleanup resources."""
         cleanup_errors = []
-        
+
         # Stop processes
         for ext in self.extensions:
             try:
                 ext.stop()
             except Exception as e:
                 cleanup_errors.append(str(e))
-        
+
         if self._adapter_registered:
             AdapterRegistry.unregister()
 
@@ -191,7 +186,7 @@ class ReferenceHost:
                 self.temp_dir.cleanup()
             except Exception as e:
                  cleanup_errors.append(f"temp_dir: {e}")
-        
+
         if cleanup_errors:
             pass
 

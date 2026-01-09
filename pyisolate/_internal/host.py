@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import logging
 import os
@@ -216,10 +217,8 @@ class Extension(Generic[T]):
         if hasattr(self, "proc") and self.proc:
             try:
                 # Attempt graceful exit via RPC closure first
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     self.proc.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    pass
 
                 if self.proc.poll() is None:
                     self.proc.terminate()
