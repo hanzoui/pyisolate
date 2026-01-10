@@ -255,7 +255,10 @@ def create_venv(venv_path: Path, config: ExtensionConfig) -> None:
                     f"candidates={[p for p in sys.path if 'site-packages' in p]}"
                 )
 
-            parent_site = valid_parents[0]
+            # On Windows, getsitepackages() may return venv root before site-packages.
+            # Prefer the actual site-packages path for correct package inheritance.
+            site_packages_paths = [p for p in valid_parents if "site-packages" in p]
+            parent_site = site_packages_paths[0] if site_packages_paths else valid_parents[0]
             pth_content = f"import site; site.addsitedir(r'{parent_site}')\n"
             pth_file = child_site / "_pyisolate_parent.pth"
             pth_file.write_text(pth_content)
