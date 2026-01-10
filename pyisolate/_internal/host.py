@@ -167,9 +167,11 @@ class Extension(Generic[T]):
         # Setting it in os.environ would affect the HOST process serialization logic
 
         if os.name == "nt":
-            import multiprocessing as std_mp
-            std_ctx = std_mp.get_context("spawn")
-            self.log_queue = std_ctx.Manager().Queue()
+            # On Windows, Manager().Queue() spawns a process that re-imports __main__,
+            # causing issues when __main__ is ComfyUI's main.py. Use a simple queue
+            # from the threading module instead - logs go to stdout anyway.
+            import queue
+            self.log_queue = queue.Queue()  # type: ignore[assignment]
         else:
             self.log_queue = self.ctx.Queue()
 
@@ -278,8 +280,8 @@ class Extension(Generic[T]):
         return self._launch_with_uds()
 
     def _launch_with_uds(self) -> Any:
-        """Launch the extension using UDS + JSON-RPC (Standard Isolation)."""
-        import os as os_module
+        """Launch the extension using UDS or TCP + JSON-RPC (Standard Isolation)."""
+        from .socket_utils import ensure_ipc_socket_dir, has_af_unix
 
         # Determine Python executable
         if os.name == "nt":
@@ -287,31 +289,33 @@ class Extension(Generic[T]):
         else:
             python_exe = str(self.venv_path / "bin" / "python")
 
-        # Create UDS listener
-        uid = os_module.getuid()
-        run_dir = f"/run/user/{uid}/pyisolate"
-        if not os_module.path.exists(run_dir):
-            try:
-                os_module.makedirs(run_dir, mode=0o700)
-            except PermissionError:
-                run_dir = f"/tmp/pyisolate-{uid}"
-                os_module.makedirs(run_dir, mode=0o700, exist_ok=True)
+        # Create listener socket - use AF_UNIX if available, otherwise TCP loopback
+        if has_af_unix():
+            run_dir = ensure_ipc_socket_dir()
+            uds_path = tempfile.mktemp(prefix="ext_", suffix=".sock", dir=str(run_dir))
+            listener_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # type: ignore[attr-defined]
+            listener_sock.bind(uds_path)
+            if os.name != "nt":
+                os.chmod(uds_path, 0o600)
+            self._uds_path = uds_path
+            ipc_address = uds_path
+        else:
+            # TCP fallback for Windows without AF_UNIX
+            listener_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener_sock.bind(("127.0.0.1", 0))  # Bind to random available port
+            _, port = listener_sock.getsockname()
+            self._uds_path = None
+            ipc_address = f"tcp://127.0.0.1:{port}"
 
-        uds_path = tempfile.mktemp(prefix="ext_", suffix=".sock", dir=run_dir)
-
-        listener_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener_sock.bind(uds_path)
-        os_module.chmod(uds_path, 0o600)
         listener_sock.listen(1)
-
         self._uds_listener = listener_sock
-        self._uds_path = uds_path
 
         # Prepare environment
         env = os.environ.copy()
 
         # Check platform for sandbox requirement
-        if os_module.uname().sysname == "Linux":
+        if sys.platform == "linux":
             # 1. Mandatory Check: Fail Loud if bwrap missing on Linux
             cap = detect_sandbox_capability()
             if not cap.available:
@@ -352,7 +356,7 @@ class Extension(Generic[T]):
                 python_exe=python_exe,
                 module_path=self.module_path,
                 venv_path=str(self.venv_path),
-                uds_address=uds_path,
+                uds_address=ipc_address,
                 sandbox_config=cast(dict[str, Any], sandbox_config),
                 allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
                 restriction_model=cap.restriction_model,
@@ -376,7 +380,7 @@ class Extension(Generic[T]):
             # Non-Linux (Windows/Mac) - Fallback to direct launch
             cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
 
-            env["PYISOLATE_UDS_ADDRESS"] = uds_path
+            env["PYISOLATE_UDS_ADDRESS"] = ipc_address
             env["PYISOLATE_CHILD"] = "1"
             env["PYISOLATE_EXTENSION"] = self.name
             env["PYISOLATE_MODULE_PATH"] = self.module_path

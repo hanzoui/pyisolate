@@ -1,5 +1,6 @@
 
 import queue
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -122,6 +123,7 @@ def test_initialize_process_cuda_ipc_unavailable_raises(monkeypatch, tmp_path):
         ext._initialize_process()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX monkeypatch requires Linux")
 def test_initialize_process_sets_env_and_runs_rpc(monkeypatch, tmp_path):
     ext = DummyExtension(tmp_path, {"share_torch": True, "share_cuda_ipc": False})
     monkeypatch.setattr(host, "AsyncRPC", lambda recv_queue=None, send_queue=None, transport=None: DummyRPC())

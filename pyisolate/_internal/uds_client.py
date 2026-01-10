@@ -57,10 +57,21 @@ def main() -> None:
             "This module should only be invoked via host launcher."
         )
 
-    # Connect to host via UDS (raw socket for JSON-RPC)
+    # Connect to host - supports both UDS paths and TCP addresses
     logger.debug("Connecting to host at %s", uds_address)
-    client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client_sock.connect(uds_address)
+    if uds_address.startswith("tcp://"):
+        # TCP fallback for Windows without AF_UNIX
+        import re
+        match = re.match(r"tcp://([^:]+):(\d+)", uds_address)
+        if not match:
+            raise RuntimeError(f"Invalid TCP address format: {uds_address}")
+        host, port = match.group(1), int(match.group(2))
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_sock.connect((host, port))
+    else:
+        # Unix Domain Socket
+        client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # type: ignore[attr-defined]
+        client_sock.connect(uds_address)
 
     # Create JSON transport (no pickle)
     from .rpc_transports import JSONSocketTransport
