@@ -12,6 +12,7 @@ import gc
 import platform
 import sys
 import time
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -44,10 +45,12 @@ except ImportError:
     NVML_AVAILABLE = False
 
 import contextlib
+import tempfile
+import shutil
 
 from memory_extension_base import MemoryBenchmarkExtensionBase
+from benchmark_harness import BenchmarkHarness
 from tabulate import tabulate
-from tests.test_integration import IntegrationTestBase
 
 from pyisolate import ExtensionConfig, ExtensionManager, ExtensionManagerConfig
 
@@ -328,10 +331,9 @@ def memory_benchmark_entrypoint():
 '''
 
 
-class MemoryBenchmarkRunner:
     """Runs memory usage benchmarks with multiple extensions."""
 
-    def __init__(self, test_base: IntegrationTestBase):
+    def __init__(self, test_base: BenchmarkHarness):
         self.test_base = test_base
         self.memory_tracker = MemoryTracker()
         self.results = []
@@ -702,7 +704,7 @@ async def run_memory_benchmarks(
     test_both_modes: bool = False,
 ):
     """Run the full memory benchmark suite."""
-    test_base = IntegrationTestBase()
+    test_base = BenchmarkHarness()
     await test_base.setup_test_environment("memory_benchmark")
 
     try:

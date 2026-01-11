@@ -12,11 +12,11 @@ sys.path.insert(0, os.path.abspath(".."))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "pyisolate"
-copyright = "2025, Jacob Segal"
+copyright = "2026, Jacob Segal"
 author = "Jacob Segal"
 
-version = "0.1.0"
-release = "0.1.0"
+version = "0.9.0"
+release = "0.9.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

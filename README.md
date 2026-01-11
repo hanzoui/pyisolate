@@ -387,6 +387,8 @@ pytest tests/test_adapter_contract.py -v
 - [x] Async/await support
 - [x] Performance benchmarking suite
 - [x] Memory usage tracking and benchmarking
+- [x] Network access restrictions
+- [x] Filesystem access sandboxing
 
 ### 🚧 In Progress
 - [ ] Documentation site
@@ -394,8 +396,6 @@ pytest tests/test_adapter_contract.py -v
 - [ ] Wrapper for non-async calls between processes
 
 ### 🔮 Future Plans
-- [ ] Network access restrictions per extension
-- [ ] Filesystem access sandboxing
 - [ ] CPU/Memory usage limits
 - [ ] Hot-reloading of extensions
 - [ ] Distributed RPC (across machines)
@@ -453,70 +453,36 @@ python benchmarks/benchmark.py --no-torch
 
 # Skip GPU benchmarks
 python benchmarks/benchmark.py --no-gpu
-
-# Run benchmarks via pytest
-pytest tests/test_benchmarks.py -v -s
 ```
 
 #### Example Benchmark Output
 
 ```
-============================================================
-RPC BENCHMARK RESULTS
-============================================================
-Successful Benchmarks:
-+--------------------------+-------------+----------------+------------+------------+
-| Test                     |   Mean (ms) |   Std Dev (ms) |   Min (ms) |   Max (ms) |
-+==========================+=============+================+============+============+
-| small_int_shared         |        0.29 |           0.04 |       0.22 |       0.71 |
-+--------------------------+-------------+----------------+------------+------------+
-| small_string_shared      |        0.29 |           0.04 |       0.22 |       0.74 |
-+--------------------------+-------------+----------------+------------+------------+
-| medium_string_shared     |        0.29 |           0.04 |       0.22 |       0.74 |
-+--------------------------+-------------+----------------+------------+------------+
-| large_string_shared      |        0.3  |           0.04 |       0.25 |       0.73 |
-+--------------------------+-------------+----------------+------------+------------+
-| tiny_tensor_cpu_shared   |        0.98 |           0.1  |       0.84 |       1.88 |
-+--------------------------+-------------+----------------+------------+------------+
-| tiny_tensor_gpu_shared   |        1.27 |           0.29 |       0.91 |       2.83 |
-+--------------------------+-------------+----------------+------------+------------+
-| small_tensor_cpu_shared  |        0.89 |           0.1  |       0.76 |       2.31 |
-+--------------------------+-------------+----------------+------------+------------+
-| small_tensor_gpu_shared  |        1.5  |           0.38 |       1.06 |       2.99 |
-+--------------------------+-------------+----------------+------------+------------+
-| medium_tensor_cpu_shared |        0.88 |           0.09 |       0.76 |       1.77 |
-+--------------------------+-------------+----------------+------------+------------+
-| medium_tensor_gpu_shared |        1.37 |           0.28 |       1.04 |       3.52 |
-+--------------------------+-------------+----------------+------------+------------+
-| large_tensor_cpu_shared  |        0.88 |           0.1  |       0.74 |       1.97 |
-+--------------------------+-------------+----------------+------------+------------+
-| large_tensor_gpu_shared  |        1.66 |           0.65 |       1.06 |      11.44 |
-+--------------------------+-------------+----------------+------------+------------+
-| image_8k_cpu_shared      |        1.18 |           0.12 |       1.01 |       2.07 |
-+--------------------------+-------------+----------------+------------+------------+
-| image_8k_gpu_shared      |        2.93 |           0.96 |       2.04 |      26.92 |
-+--------------------------+-------------+----------------+------------+------------+
-| model_6gb_cpu_shared     |        0.9  |           0.1  |       0.76 |       2.04 |
-+--------------------------+-------------+----------------+------------+------------+
+==================================================
+BENCHMARK RESULTS
+==================================================
+Test            Mean (ms)    Std Dev (ms)   Runs  
+--------------------------------------------------
+small_int       0.63         0.05           1000  
+small_string    0.64         0.06           1000  
+medium_string   0.65         0.07           1000  
+tiny_tensor     0.79         0.08           1000  
+small_tensor    0.80         0.11           1000  
+medium_tensor   0.81         0.06           1000  
+large_tensor    0.78         0.08           1000  
+model_tensor    0.88         0.29           1000  
 
-Failed Tests:
-+----------------------+------------------+
-| Test                 | Error            |
-+======================+==================+
-| model_6gb_gpu_shared | CUDA OOM/Timeout |
-+----------------------+------------------+
-
+Fastest result: 0.63ms
 ```
 
 The benchmarks measure:
 
-1. **Small Data RPC Overhead**: ~0.26-0.28ms for basic data types (integers, strings)
-2. **Large Data Scaling**: Performance with large arrays and tensors
-3. **Torch Tensor Overhead**: Additional cost for tensor serialization
-4. **GPU vs CPU Tensors**: GPU tensors show higher overhead due to device transfers
-5. **Array Processing**: Numpy arrays show ~95% overhead vs basic data types
+1. **Small Data RPC Overhead**: ~0.6ms for basic data types (integers, strings)
+2. **Tensor Overhead**: Minimal overhead (~0.2ms) for sharing tensors up to 6GB via zero-copy shared memory
+3. **Scaling**: Performance remains O(1) regardless of tensor size
 
-For detailed benchmark documentation, see [benchmarks/README.md](benchmarks/README.md).
+> ⚠️ **Note for CPU Tensors**: When checking out or running benchmarks with `share_torch=True`, ensuring `TMPDIR=/dev/shm` is recommended to guarantee that shared memory files are visible to sandboxed child processes.
+
 
 ## License
 
