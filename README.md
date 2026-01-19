@@ -2,13 +2,82 @@
 
 **Run Python extensions in isolated virtual environments with seamless inter-process communication.**
 
-> ⚠️ **Warning**: This library is currently in active development and the API may change. While the core functionality is working, it should not be considered stable for production use yet.
+> 🚨 **Fail Loud Policy**: pyisolate assumes the rest of ComfyUI core is correct. Missing prerequisites or runtime failures immediately raise descriptive exceptions instead of being silently ignored.
 
-pyisolate enables you to run Python extensions with conflicting dependencies in the same application by automatically creating isolated virtual environments for each extension. Extensions communicate with the host process through a transparent RPC system, making the isolation invisible to your code.
+pyisolate enables you to run Python extensions with conflicting dependencies in the same application by automatically creating isolated virtual environments for each extension using `uv`. Extensions communicate with the host process through a transparent RPC system, making the isolation invisible to your code while keeping the host environment dependency-free.
+
+## Requirements
+
+- Python 3.9+
+- The [`uv`](https://github.com/astral-sh/uv) CLI available on your `PATH`
+- `pip`/`venv` for bootstrapping the development environment
+
+## Environment Variables
+
+PyIsolate uses several environment variables for configuration and debugging:
+
+### Core Variables (Set by PyIsolate automatically)
+- **`PYISOLATE_CHILD`**: Set to `"1"` in isolated child processes. Used to detect if code is running in host or child.
+- **`PYISOLATE_HOST_SNAPSHOT`**: Path to JSON file containing the host's `sys.path` and environment variables. Used during child process initialization.
+- **`PYISOLATE_MODULE_PATH`**: Path to the extension module being loaded. Used to detect ComfyUI root directory.
+
+### Debug Variables (Set by user)
+- **`PYISOLATE_PATH_DEBUG`**: Set to `"1"` to enable detailed sys.path logging during child process initialization. Useful for debugging import issues.
+
+Example usage:
+```bash
+# Enable detailed path logging
+export PYISOLATE_PATH_DEBUG=1
+python main.py
+
+# Disable path logging (default)
+unset PYISOLATE_PATH_DEBUG
+python main.py
+```
+
+## Quick Start
+
+### Option A – run everything for me
+
+```bash
+cd /path/to/pyisolate
+./quickstart.sh
+```
+
+The script installs `uv`, creates the dev venv, installs pyisolate in editable mode, runs the multi-extension example, and executes the Comfy Hello World demo.
+
+### Option B – manual setup (5 minutes)
+
+1. **Create the dev environment**
+    ```bash
+    cd /path/to/pyisolate
+    uv venv
+    source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+    uv pip install -e ".[dev]"
+    ```
+2. **Run the example extensions**
+    ```bash
+    cd example
+    python main.py
+    cd ..
+    ```
+    Expected output:
+    ```
+    Extension1      | ✓ PASSED      | Data processing with pandas/numpy 1.x
+    Extension2      | ✓ PASSED      | Array processing with numpy 2.x
+    Extension3      | ✓ PASSED      | HTML parsing with BeautifulSoup/scipy
+    ```
+3. **Run the Comfy Hello World**
+    ```bash
+    cd comfy_hello_world
+    python main.py
+    ```
+    You should see the isolated custom node load, execute, and fetch data from the shared singleton service.
 
 ## Documentation
 
-You can find documentation on this library here: https://comfy-org.github.io/pyisolate/
+- Project site: https://comfy-org.github.io/pyisolate/
+- Walkthroughs & architecture notes: see `mysolate/HELLO_WORLD.md` and `mysolate/GETTING_STARTED.md`
 
 ## Key Benefits
 
@@ -64,7 +133,7 @@ async def main():
     manager = pyisolate.ExtensionManager(pyisolate.ExtensionBase, config)
 
     # Load an extension with specific dependencies
-    extension = await manager.load_extension(
+    extension = manager.load_extension(
         pyisolate.ExtensionConfig(
             name="data_processor",
             module_path="./extensions/my_extension",
@@ -100,7 +169,7 @@ class MLExtension(ExtensionBase):
 
 ```python
 # main.py
-extension = await manager.load_extension(
+extension = manager.load_extension(
     pyisolate.ExtensionConfig(
         name="ml_processor",
         module_path="./extensions/ml_extension",
@@ -240,6 +309,68 @@ This structure ensures that:
 └─────────────────────┘              └─────────────┘
 ```
 
+## Implementing a Host Adapter (IsolationAdapter)
+
+When integrating pyisolate with your application (like ComfyUI), you implement the `IsolationAdapter` protocol. This tells pyisolate how to configure isolated processes for your environment.
+
+### Reference Implementation
+
+The canonical example is in `tests/fixtures/test_adapter.py`:
+
+```python
+from pyisolate.interfaces import IsolationAdapter
+from pyisolate._internal.shared import ProxiedSingleton
+
+class MockHostAdapter(IsolationAdapter):
+    """Reference adapter showing all protocol methods."""
+
+    @property
+    def identifier(self) -> str:
+        """Return unique adapter identifier (e.g., 'comfyui')."""
+        return "myapp"
+
+    def get_path_config(self, module_path: str) -> dict:
+        """Configure sys.path for isolated extensions.
+
+        Returns:
+            - preferred_root: Your app's root directory
+            - additional_paths: Extra paths for imports
+        """
+        return {
+            "preferred_root": "/path/to/myapp",
+            "additional_paths": ["/path/to/myapp/extensions"],
+        }
+
+    def setup_child_environment(self, snapshot: dict) -> None:
+        """Configure child process after sys.path reconstruction."""
+        pass  # Set up logging, environment, etc.
+
+    def register_serializers(self, registry) -> None:
+        """Register custom type serializers for RPC transport."""
+        registry.register(
+            "MyCustomType",
+            serializer=lambda obj: {"data": obj.data},
+            deserializer=lambda d: MyCustomType(d["data"]),
+        )
+
+    def provide_rpc_services(self) -> list:
+        """Return ProxiedSingleton classes to expose via RPC."""
+        return [MyRegistry, MyProgressReporter]
+
+    def handle_api_registration(self, api, rpc) -> None:
+        """Post-registration hook for API-specific setup."""
+        pass
+```
+
+### Testing Your Adapter
+
+Run the contract tests to verify your adapter implements the protocol correctly:
+
+```bash
+# The test suite verifies all protocol methods
+pytest tests/test_adapter_contract.py -v
+```
+
 ## Roadmap
 
 ### ✅ Completed
@@ -256,6 +387,8 @@ This structure ensures that:
 - [x] Async/await support
 - [x] Performance benchmarking suite
 - [x] Memory usage tracking and benchmarking
+- [x] Network access restrictions
+- [x] Filesystem access sandboxing
 
 ### 🚧 In Progress
 - [ ] Documentation site
@@ -263,8 +396,6 @@ This structure ensures that:
 - [ ] Wrapper for non-async calls between processes
 
 ### 🔮 Future Plans
-- [ ] Network access restrictions per extension
-- [ ] Filesystem access sandboxing
 - [ ] CPU/Memory usage limits
 - [ ] Hot-reloading of extensions
 - [ ] Distributed RPC (across machines)
@@ -322,70 +453,36 @@ python benchmarks/benchmark.py --no-torch
 
 # Skip GPU benchmarks
 python benchmarks/benchmark.py --no-gpu
-
-# Run benchmarks via pytest
-pytest tests/test_benchmarks.py -v -s
 ```
 
 #### Example Benchmark Output
 
 ```
-============================================================
-RPC BENCHMARK RESULTS
-============================================================
-Successful Benchmarks:
-+--------------------------+-------------+----------------+------------+------------+
-| Test                     |   Mean (ms) |   Std Dev (ms) |   Min (ms) |   Max (ms) |
-+==========================+=============+================+============+============+
-| small_int_shared         |        0.29 |           0.04 |       0.22 |       0.71 |
-+--------------------------+-------------+----------------+------------+------------+
-| small_string_shared      |        0.29 |           0.04 |       0.22 |       0.74 |
-+--------------------------+-------------+----------------+------------+------------+
-| medium_string_shared     |        0.29 |           0.04 |       0.22 |       0.74 |
-+--------------------------+-------------+----------------+------------+------------+
-| large_string_shared      |        0.3  |           0.04 |       0.25 |       0.73 |
-+--------------------------+-------------+----------------+------------+------------+
-| tiny_tensor_cpu_shared   |        0.98 |           0.1  |       0.84 |       1.88 |
-+--------------------------+-------------+----------------+------------+------------+
-| tiny_tensor_gpu_shared   |        1.27 |           0.29 |       0.91 |       2.83 |
-+--------------------------+-------------+----------------+------------+------------+
-| small_tensor_cpu_shared  |        0.89 |           0.1  |       0.76 |       2.31 |
-+--------------------------+-------------+----------------+------------+------------+
-| small_tensor_gpu_shared  |        1.5  |           0.38 |       1.06 |       2.99 |
-+--------------------------+-------------+----------------+------------+------------+
-| medium_tensor_cpu_shared |        0.88 |           0.09 |       0.76 |       1.77 |
-+--------------------------+-------------+----------------+------------+------------+
-| medium_tensor_gpu_shared |        1.37 |           0.28 |       1.04 |       3.52 |
-+--------------------------+-------------+----------------+------------+------------+
-| large_tensor_cpu_shared  |        0.88 |           0.1  |       0.74 |       1.97 |
-+--------------------------+-------------+----------------+------------+------------+
-| large_tensor_gpu_shared  |        1.66 |           0.65 |       1.06 |      11.44 |
-+--------------------------+-------------+----------------+------------+------------+
-| image_8k_cpu_shared      |        1.18 |           0.12 |       1.01 |       2.07 |
-+--------------------------+-------------+----------------+------------+------------+
-| image_8k_gpu_shared      |        2.93 |           0.96 |       2.04 |      26.92 |
-+--------------------------+-------------+----------------+------------+------------+
-| model_6gb_cpu_shared     |        0.9  |           0.1  |       0.76 |       2.04 |
-+--------------------------+-------------+----------------+------------+------------+
+==================================================
+BENCHMARK RESULTS
+==================================================
+Test            Mean (ms)    Std Dev (ms)   Runs  
+--------------------------------------------------
+small_int       0.63         0.05           1000  
+small_string    0.64         0.06           1000  
+medium_string   0.65         0.07           1000  
+tiny_tensor     0.79         0.08           1000  
+small_tensor    0.80         0.11           1000  
+medium_tensor   0.81         0.06           1000  
+large_tensor    0.78         0.08           1000  
+model_tensor    0.88         0.29           1000  
 
-Failed Tests:
-+----------------------+------------------+
-| Test                 | Error            |
-+======================+==================+
-| model_6gb_gpu_shared | CUDA OOM/Timeout |
-+----------------------+------------------+
-
+Fastest result: 0.63ms
 ```
 
 The benchmarks measure:
 
-1. **Small Data RPC Overhead**: ~0.26-0.28ms for basic data types (integers, strings)
-2. **Large Data Scaling**: Performance with large arrays and tensors
-3. **Torch Tensor Overhead**: Additional cost for tensor serialization
-4. **GPU vs CPU Tensors**: GPU tensors show higher overhead due to device transfers
-5. **Array Processing**: Numpy arrays show ~95% overhead vs basic data types
+1. **Small Data RPC Overhead**: ~0.6ms for basic data types (integers, strings)
+2. **Tensor Overhead**: Minimal overhead (~0.2ms) for sharing tensors up to 6GB via zero-copy shared memory
+3. **Scaling**: Performance remains O(1) regardless of tensor size
 
-For detailed benchmark documentation, see [benchmarks/README.md](benchmarks/README.md).
+> ⚠️ **Note for CPU Tensors**: When checking out or running benchmarks with `share_torch=True`, ensuring `TMPDIR=/dev/shm` is recommended to guarantee that shared memory files are visible to sandboxed child processes.
+
 
 ## License
 
