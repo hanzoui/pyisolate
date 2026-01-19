@@ -1,166 +1,66 @@
 import contextlib
+import hashlib
 import logging
 import os
-import re
-import shutil
+import socket
 import subprocess
 import sys
-from contextlib import contextmanager, nullcontext
+import tempfile
+import threading
+from logging.handlers import QueueListener
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, Optional, TypeVar, cast
 
 from ..config import ExtensionConfig
 from ..shared import ExtensionBase
-from .client import entrypoint
-from .shared import AsyncRPC
+from .environment import (
+    build_extension_snapshot,
+    create_venv,
+    install_dependencies,
+    normalize_extension_name,
+    validate_dependency,
+    validate_path_within_root,
+)
+from .rpc_protocol import AsyncRPC
+from .rpc_transports import JSONSocketTransport
+from .sandbox import build_bwrap_command
+from .sandbox_detect import detect_sandbox_capability
+from .tensor_serializer import register_tensor_serializer
+from .torch_utils import probe_cuda_ipc_support
+
+__all__ = [
+    "Extension",
+    "ExtensionBase",
+    "build_extension_snapshot",
+    "normalize_extension_name",
+    "validate_dependency",
+]
 
 logger = logging.getLogger(__name__)
 
 
-def normalize_extension_name(name: str) -> str:
-    """
-    Normalize an extension name to be safe for use in filesystem paths and shell commands.
+class _DeduplicationFilter(logging.Filter):
+    def __init__(self, timeout_seconds: int = 10):
+        super().__init__()
+        self.timeout = timeout_seconds
+        self.last_seen: dict[str, float] = {}
 
-    This function:
-    - Replaces spaces and unsafe characters with underscores
-    - Removes directory traversal attempts
-    - Ensures the name is not empty
-    - Preserves Unicode characters (for non-English names)
+    def filter(self, record: logging.LogRecord) -> bool:
+        import time
+        msg_content = record.getMessage()
+        msg_hash = hashlib.sha256(msg_content.encode('utf-8')).hexdigest()
+        now = time.time()
 
-    Args:
-        name: The original extension name
+        if msg_hash in self.last_seen and now - self.last_seen[msg_hash] < self.timeout:
+            return False  # Suppress duplicate
 
-    Returns:
-        A normalized, filesystem-safe version of the name
+        self.last_seen[msg_hash] = now
 
-    Raises:
-        ValueError: If the name is empty or only contains invalid characters
-    """
-    if not name:
-        raise ValueError("Extension name cannot be empty")
+        if len(self.last_seen) > 1000:
+            cutoff = now - self.timeout
+            self.last_seen = {k: v for k, v in self.last_seen.items() if v > cutoff}
 
-    # Remove any directory traversal attempts or absolute path indicators
-    # Replace path separators with underscores
-    name = name.replace("/", "_").replace("\\", "_")
-
-    # Remove leading dots to prevent hidden files
-    while name.startswith("."):
-        name = name[1:]
-
-    # Replace consecutive dots that are part of directory traversal
-    name = name.replace("..", "_")
-
-    # Replace problematic characters with underscores
-    # This includes spaces, shell metacharacters, and control characters
-    # But preserves Unicode letters, numbers, and some safe punctuation
-    unsafe_chars = [
-        " ",  # Spaces
-        "\t",  # Tabs
-        "\n",  # Newlines
-        "\r",  # Carriage returns
-        ";",  # Command separator
-        "|",  # Pipe
-        "&",  # Background/and
-        "$",  # Variable expansion
-        "`",  # Command substitution
-        "(",  # Subshell
-        ")",  # Subshell
-        "<",  # Redirect
-        ">",  # Redirect
-        '"',  # Quote
-        "'",  # Quote
-        "\\",  # Escape (already handled above)
-        "!",  # History expansion
-        "{",  # Brace expansion
-        "}",  # Brace expansion
-        "[",  # Glob
-        "]",  # Glob
-        "*",  # Glob
-        "?",  # Glob
-        "~",  # Home directory
-        "#",  # Comment
-        "%",  # Job control
-        "=",  # Assignment
-        ":",  # Path separator
-        ",",  # Various uses
-        "\0",  # Null byte
-    ]
-
-    for char in unsafe_chars:
-        name = name.replace(char, "_")
-
-    # Replace multiple consecutive underscores with a single underscore
-    name = re.sub(r"_+", "_", name)
-
-    # Remove leading and trailing underscores
-    name = name.strip("_")
-
-    # If the name is now empty (was all invalid chars), raise an error
-    if not name:
-        raise ValueError("Extension name contains only invalid characters")
-
-    return name
-
-
-def validate_dependency(dep: str) -> None:
-    """Validate a single dependency specification."""
-    if not dep:
-        return
-
-    # Special case: allow "-e" for editable installs followed by a path
-    if dep == "-e":
-        # This is OK, it should be followed by a path in the next argument
-        return
-
-    # Check if it looks like a command-line option (but allow -e)
-    if dep.startswith("-") and not dep.startswith("-e "):
-        raise ValueError(
-            f"Invalid dependency '{dep}'. "
-            "Dependencies cannot start with '-' as this could be a command option."
-        )
-
-    # Basic validation for common injection patterns
-    # Note: We allow < and > as they're used in version specifiers
-    dangerous_patterns = ["&&", "||", ";", "|", "`", "$", "\n", "\r", "\0"]
-    for pattern in dangerous_patterns:
-        if pattern in dep:
-            raise ValueError(
-                f"Invalid dependency '{dep}'. Contains potentially dangerous character: '{pattern}'"
-            )
-
-
-def validate_path_within_root(path: Path, root: Path) -> None:
-    """Ensure a path is within the expected root directory."""
-    try:
-        # Resolve both paths to absolute paths
-        resolved_path = path.resolve()
-        resolved_root = root.resolve()
-
-        # Check if the path is within the root
-        resolved_path.relative_to(resolved_root)
-    except ValueError as err:
-        raise ValueError(f"Path '{path}' is not within the expected root directory '{root}'") from err
-
-
-@contextmanager
-def environment(**env_vars):
-    """Context manager for temporarily setting environment variables"""
-    original = {}
-
-    # Save original values and set new ones
-    for key, value in env_vars.items():
-        original[key] = os.environ.get(key)
-        os.environ[key] = str(value)
-
-    try:
-        yield
-    finally:
-        # Restore original values
-        for key, value in original.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        return True
 
 
 T = TypeVar("T", bound=ExtensionBase)
@@ -174,224 +74,385 @@ class Extension(Generic[T]):
         config: ExtensionConfig,
         venv_root_path: str,
     ) -> None:
-        # Store original name for display purposes
-        self.name = config["name"]
+        force_ipc = os.environ.get("PYISOLATE_FORCE_CUDA_IPC") == "1"
 
-        # Normalize the name for filesystem operations
+        if "share_cuda_ipc" not in config:
+            # Default to True ONLY if supported and sharing torch
+            ipc_supported, _ = probe_cuda_ipc_support()
+            config["share_cuda_ipc"] = force_ipc or (config.get("share_torch", False) and ipc_supported)
+        elif force_ipc:
+            config["share_cuda_ipc"] = True
+
+        self.name = config["name"]
         self.normalized_name = normalize_extension_name(self.name)
 
-        # Log if normalization changed the name
-        if self.normalized_name != self.name:
-            logger.debug(
-                f"Extension name '{self.name}' normalized to '{self.normalized_name}' "
-                "for filesystem compatibility"
-            )
-
-        # Validate all dependencies
         for dep in config["dependencies"]:
             validate_dependency(dep)
 
-        # Use Path for safer path operations with normalized name
         venv_root = Path(venv_root_path).resolve()
         self.venv_path = venv_root / self.normalized_name
-
-        # Ensure the venv path is within the root directory
         validate_path_within_root(self.venv_path, venv_root)
 
         self.module_path = module_path
         self.config = config
         self.extension_type = extension_type
+        self._cuda_ipc_enabled = False
 
+        # Auto-populate APIs from adapter if not already in config
+        if "apis" not in self.config:
+            try:
+                # v1.0: Check registry
+                from .adapter_registry import AdapterRegistry
+                adapter = AdapterRegistry.get()
+
+                if adapter:
+                    rpc_services = adapter.provide_rpc_services()
+                    self.config["apis"] = rpc_services
+                else:
+                    self.config["apis"] = []
+            except Exception as exc:
+                logger.warning("[Extension] Could not load adapter RPC services: %s", exc)
+                self.config["apis"] = []
+
+        self.mp: Any
         if self.config["share_torch"]:
             import torch.multiprocessing
-
             self.mp = torch.multiprocessing
         else:
             import multiprocessing
-
             self.mp = multiprocessing
 
-        start_method = self.mp.get_start_method(allow_none=True)
-        if start_method is None:
-            self.mp.set_start_method("spawn")
-        elif start_method != "spawn":
-            raise RuntimeError(
-                f"Invalid start method {start_method} for pyisolate. "
-                "Pyisolate requires the 'spawn' start method to work correctly."
-            )
-        self.to_extension = self.mp.Queue()
-        self.from_extension = self.mp.Queue()
+        self._process_initialized = False
+        self.log_queue: Optional[Any] = None
+        self.log_listener: Optional[QueueListener] = None
+
+        # UDS / JSON-RPC resources
+        self._uds_listener: Optional[Any] = None
+        self._uds_path: Optional[str] = None
+        self._client_sock: Optional[Any] = None
+
+        self.extension_proxy: Optional[T] = None
+
+    def ensure_process_started(self) -> None:
+        """Start the isolated process if it has not been initialized."""
+        if self._process_initialized:
+            return
+        self._initialize_process()
+        self._process_initialized = True
+
+    def _initialize_process(self) -> None:
+        """Initialize queues, RPC, and launch the isolated process."""
+        try:
+            self.ctx = self.mp.get_context("spawn")
+        except ValueError as e:
+            raise RuntimeError(f"Failed to get 'spawn' context: {e}") from e
+
+        # Determine CUDA IPC eligibility up front (host side)
+        self._cuda_ipc_enabled = False
+        want_ipc = bool(self.config.get("share_cuda_ipc", False))
+        if want_ipc:
+            if not self.config.get("share_torch", False):
+                raise RuntimeError("share_cuda_ipc requires share_torch=True")
+            supported, reason = probe_cuda_ipc_support()
+            if not supported:
+                raise RuntimeError(f"CUDA IPC requested but unavailable: {reason}")
+            self._cuda_ipc_enabled = True
+            logger.debug("CUDA IPC enabled for %s", self.name)
+
+        # Monotonically enable IPC logic. Do not disable if already enabled by another extension.
+        if self._cuda_ipc_enabled:
+             os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1"
+
+        # PYISOLATE_CHILD is set in the child's env dict, NOT in os.environ
+        # Setting it in os.environ would affect the HOST process serialization logic
+
+        if os.name == "nt":
+            # On Windows, Manager().Queue() spawns a process that re-imports __main__,
+            # causing issues when __main__ is ComfyUI's main.py. Use a simple queue
+            # from the threading module instead - logs go to stdout anyway.
+            import queue
+            self.log_queue = queue.Queue()  # type: ignore[assignment]
+        else:
+            self.log_queue = self.ctx.Queue()
+
         self.extension_proxy = None
+
+        # Create handler with deduplication filter (industry standard)
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.addFilter(_DeduplicationFilter(timeout_seconds=5))
+
+        self.log_listener = QueueListener(self.log_queue, stream_handler)
+        self.log_listener.start()
+
+        # Register tensor serializer for JSON-RPC
+        from .serialization_registry import SerializerRegistry
+        register_tensor_serializer(SerializerRegistry.get_instance())
+
+        # Ensure file_system strategy for CPU tensors
+        import torch
+        torch.multiprocessing.set_sharing_strategy('file_system')
+
         self.proc = self.__launch()
-        self.rpc = AsyncRPC(recv_queue=self.from_extension, send_queue=self.to_extension)
-        for api in config["apis"]:
+
+        for api in self.config["apis"]:
             api()._register(self.rpc)
+
         self.rpc.run()
 
     def get_proxy(self) -> T:
+        """Return (and memoize) the RPC caller for the remote extension."""
         if self.extension_proxy is None:
             self.extension_proxy = self.rpc.create_caller(self.extension_type, "extension")
-
         return self.extension_proxy
 
     def stop(self) -> None:
-        """Stop the extension process and clean up resources."""
-        try:
-            # Terminate the process first to prevent further issues
-            if hasattr(self, "proc") and self.proc.is_alive():
-                self.proc.terminate()
-                self.proc.join(timeout=5.0)
+        """Stop the extension process and clean up queues/listeners."""
+        errors: list[str] = []
 
-                # Force kill if still alive
-                if self.proc.is_alive():
-                    logger.warning(f"Extension {self.name} did not terminate gracefully, force killing")
-                    self.proc.kill()
-                    self.proc.join()
+        if hasattr(self, "rpc") and self.rpc:
+            try:
+                self.rpc.shutdown()
+            except Exception as exc:
+                errors.append(f"rpc shutdown: {exc}")
 
-            # Clean up queues
-            if hasattr(self, "to_extension"):
-                with contextlib.suppress(Exception):
-                    self.to_extension.close()
-            if hasattr(self, "from_extension"):
-                with contextlib.suppress(Exception):
-                    self.from_extension.close()
+        # Terminate process
+        if hasattr(self, "proc") and self.proc:
+            try:
+                # Attempt graceful exit via RPC closure first
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    self.proc.wait(timeout=3.0)
 
-        except Exception as e:
-            logger.error(f"Error stopping extension {self.name}: {e}")
+                if self.proc.poll() is None:
+                    self.proc.terminate()
+                    try:
+                        self.proc.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        self.proc.kill()
+                        self.proc.wait()
+            except Exception as exc:
+                errors.append(f"terminate: {exc}")
 
-    def __launch(self):
-        """
-        Launch the extension in a separate process.
-        """
-        # Create the virtual environment for the extension
-        self._create_extension_venv()
+        if self.log_listener:
+            try:
+                self.log_listener.stop()
+            except Exception as exc:
+                errors.append(f"log_listener: {exc}")
 
-        # Install dependencies in the virtual environment
-        self._install_dependencies()
+        # Clean up UDS resources
+        if self._client_sock:
+            try:
+                self._client_sock.close()
+            except Exception as exc:
+                errors.append(f"client_sock: {exc}")
 
-        # Set the Python executable from the virtual environment
-        executable = sys._base_executable if os.name == "nt" else str(self.venv_path / "bin" / "python")
-        logger.debug(f"Launching extension {self.name} with Python executable: {executable}")
-        self.mp.set_executable(executable)
-        context = nullcontext()
+        if self._uds_listener:
+            try:
+                self._uds_listener.close()
+            except Exception as exc:
+                errors.append(f"uds_listener: {exc}")
+
+        if self._uds_path and os.path.exists(self._uds_path):
+            try:
+                os.unlink(self._uds_path)
+            except Exception as exc:
+                errors.append(f"unlink uds: {exc}")
+
+        if self.log_queue:
+            try:
+                # On Windows/multiprocessing, queue might need closing
+                if hasattr(self.log_queue, "close"):
+                    self.log_queue.close()
+            except Exception as exc:
+                errors.append(f"log_queue: {exc}")
+
+        self._process_initialized = False
+        self.extension_proxy = None
+        if hasattr(self, "rpc"):
+            del self.rpc
+
+        if errors:
+            raise RuntimeError(f"Errors stopping {self.name}: {'; '.join(errors)}")
+
+    def __launch(self) -> Any:
+        """Launch the extension in a separate process after venv + deps are ready."""
+        create_venv(self.venv_path, self.config)
+        install_dependencies(self.venv_path, self.config, self.name)
+        return self._launch_with_uds()
+
+    def _launch_with_uds(self) -> Any:
+        """Launch the extension using UDS or TCP + JSON-RPC (Standard Isolation)."""
+        from .socket_utils import ensure_ipc_socket_dir, has_af_unix
+
+        # Determine Python executable
         if os.name == "nt":
-            # On Windows, we need to set the environment variables for the subprocess
-            context = environment(
-                VIRTUAL_ENV=str(self.venv_path),
+            python_exe = str(self.venv_path / "Scripts" / "python.exe")
+        else:
+            python_exe = str(self.venv_path / "bin" / "python")
+
+        # Create listener socket - use AF_UNIX if available, otherwise TCP loopback
+        if has_af_unix():
+            run_dir = ensure_ipc_socket_dir()
+            uds_path = tempfile.mktemp(prefix="ext_", suffix=".sock", dir=str(run_dir))
+            listener_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # type: ignore[attr-defined]
+            listener_sock.bind(uds_path)
+            if os.name != "nt":
+                os.chmod(uds_path, 0o600)
+            self._uds_path = uds_path
+            ipc_address = uds_path
+        else:
+            # TCP fallback for Windows without AF_UNIX
+            listener_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener_sock.bind(("127.0.0.1", 0))  # Bind to random available port
+            _, port = listener_sock.getsockname()
+            self._uds_path = None
+            ipc_address = f"tcp://127.0.0.1:{port}"
+
+        listener_sock.listen(1)
+        self._uds_listener = listener_sock
+
+        # Prepare environment
+        env = os.environ.copy()
+
+        # Check platform for sandbox requirement
+        if sys.platform == "linux":
+            # 1. Mandatory Check: Fail Loud if bwrap missing on Linux
+            cap = detect_sandbox_capability()
+            if not cap.available:
+                raise RuntimeError(
+                    f"Process isolation on Linux REQUIRES bubblewrap.\n"
+                    f"Error: {cap.remediation}\n"
+                    f"Details: {cap.restriction_model} - {cap.raw_error}"
+                )
+
+            # Apply env overrides BEFORE building cmd or bwrap env
+            if "env" in self.config:
+                env.update(self.config["env"])
+
+            # 2. Build Bwrap Command
+            # We need to construct the SandboxConfig from self.config if present
+            sandbox_config = self.config.get("sandbox", {})
+            if isinstance(sandbox_config, bool):
+                sandbox_config = {}
+
+            # Detect host site-packages to allow access to Torch/Comfy dependencies
+            # We must bind the site-packages of the HOST python (or at least where torch is)
+            # because the isolated venv is often a thin venv sharing deps or expecting them.
+            import site
+            extra_binds = []
+
+            # Add standard site-packages
+            site_packages = site.getsitepackages()
+            for sp in site_packages:
+                if os.path.exists(sp):
+                    extra_binds.append(sp)
+
+            # Also add user site-packages just in case
+            user_site = site.getusersitepackages()
+            if isinstance(user_site, str) and os.path.exists(user_site):
+                extra_binds.append(user_site)
+
+            cmd = build_bwrap_command(
+                python_exe=python_exe,
+                module_path=self.module_path,
+                venv_path=str(self.venv_path),
+                uds_address=ipc_address,
+                sandbox_config=cast(dict[str, Any], sandbox_config),
+                allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
+                restriction_model=cap.restriction_model,
+                env_overrides=self.config.get("env"),
             )
-        with context:
-            proc = self.mp.Process(
-                target=entrypoint,
-                args=(
-                    self.module_path,
-                    self.extension_type,
-                    self.config,
-                    self.to_extension,
-                    self.from_extension,
-                ),
-            )
-            proc.start()
+
+            # INSTRUMENTATION: LOG THE EXACT COMMAND
+            # logger.error("!" * 80)
+            # logger.error(f"[BWRAP-DEBUG] Launching CMD: {' '.join(cmd)}")
+            # logger.error("!" * 80)
+
+            # bwrap uses --setenv to pass variables, so the `env` arg to Popen
+
+
+            # bwrap uses --setenv to pass variables, so the `env` arg to Popen
+            # only affects the bwrap process itself (path lookup, etc), not the child.
+            # We must NOT pass these vars in `env` because they are already in `cmd`.
+            # However, keeping them in `env` is harmless and ensures bwrap has a sane env.
+
+        else:
+            # Non-Linux (Windows/Mac) - Fallback to direct launch
+            cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
+
+            env["PYISOLATE_UDS_ADDRESS"] = ipc_address
+            env["PYISOLATE_CHILD"] = "1"
+            env["PYISOLATE_EXTENSION"] = self.name
+            env["PYISOLATE_MODULE_PATH"] = self.module_path
+            env["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
+
+        # Launch process
+        # logger.error(f"[BWRAP-DEBUG] Final subprocess.Popen args: {cmd}")
+
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=None, # Inherit stdout/stderr for now so we see logs
+            stderr=None,
+            close_fds=True,
+        )
+
+        # Accept connection
+        client_sock = None
+        accept_error = None
+
+        def accept_connection() -> None:
+            nonlocal client_sock, accept_error
+            try:
+                client_sock, _ = listener_sock.accept()
+            except Exception as e:
+                accept_error = e
+
+        accept_thread = threading.Thread(target=accept_connection)
+        accept_thread.daemon = True
+        accept_thread.start()
+        accept_thread.join(timeout=30.0)
+
+        if accept_thread.is_alive():
+            proc.terminate()
+            raise RuntimeError(f"Child failed to connect within timeout for {self.name}")
+
+        if accept_error:
+            proc.terminate()
+            raise RuntimeError(f"Child failed to connect for {self.name}: {accept_error}")
+
+        if client_sock is None:
+            proc.terminate()
+            raise RuntimeError(f"Child connection is None for {self.name}")
+
+        # Setup JSON-RPC
+        transport = JSONSocketTransport(client_sock)
+        logger.debug("Child connected, sending bootstrap data")
+
+        # Send bootstrap
+        snapshot = build_extension_snapshot(self.module_path)
+        ext_type_ref = f"{self.extension_type.__module__}.{self.extension_type.__name__}"
+
+        # Sanitize config for JSON serialization (convert API classes to string refs)
+        safe_config = dict(self.config)  # type: ignore[arg-type]
+        if "apis" in safe_config:
+            api_list: list[str] = [
+                f"{api.__module__}.{api.__name__}" for api in self.config["apis"]  # type: ignore[union-attr]
+            ]
+            safe_config["apis"] = api_list
+
+        bootstrap_data = {
+            "snapshot": snapshot,
+            "config": safe_config,
+            "extension_type_ref": ext_type_ref,
+        }
+        transport.send(bootstrap_data)
+
+        self._client_sock = client_sock
+        self.rpc = AsyncRPC(transport=transport)
+
         return proc
 
-    def _create_extension_venv(self):
-        """
-        Create a virtual environment for the extension if it doesn't exist.
-        """
-        # Ensure parent directory exists
-        self.venv_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if not self.venv_path.exists():
-            logger.debug(f"Creating virtual environment for extension {self.name} at {self.venv_path}")
-
-            # Find uv executable path for better security
-            uv_path = shutil.which("uv")
-            if not uv_path:
-                raise RuntimeError("uv command not found in PATH")
-
-            # Use the resolved, validated path
-            subprocess.check_call([uv_path, "venv", str(self.venv_path)])  # noqa: S603
-
-    # TODO(Optimization): Only do this when we update a extension to reduce startup time?
-    def _install_dependencies(self):
-        """
-        Install dependencies in the extension's virtual environment.
-        """
-        if os.name == "nt":
-            python_executable = self.venv_path / "Scripts" / "python.exe"
-        else:
-            python_executable = self.venv_path / "bin" / "python"
-
-        # Ensure the Python executable exists
-        if not python_executable.exists():
-            raise RuntimeError(f"Python executable not found at {python_executable}")
-
-        # Find uv executable path for better security
-        uv_path = shutil.which("uv")
-        if not uv_path:
-            raise RuntimeError("uv command not found in PATH")
-
-        uv_args = [uv_path, "pip", "install", "--python", str(python_executable)]
-
-        uv_common_args = []
-
-        # Set up a local cache directory next to venvs to ensure same filesystem
-        # This enables hardlinking and saves disk space
-        cache_dir = self.venv_path.parent / ".uv_cache"
-        cache_dir.mkdir(exist_ok=True)
-        uv_common_args.extend(["--cache-dir", str(cache_dir)])
-
-        # Install the same version of torch as the current process
-        if self.config["share_torch"]:
-            import torch
-
-            torch_version = torch.__version__
-            if torch_version.endswith("+cpu"):
-                # On Windows, the '+cpu' is not included in the version string
-                torch_version = torch_version[:-4]  # Remove the '+cpu' suffix
-            cuda_version = torch.version.cuda  # type: ignore
-            if cuda_version:
-                uv_common_args += [
-                    "--extra-index-url",
-                    f"https://download.pytorch.org/whl/cu{cuda_version.replace('.', '')}",
-                ]
-            uv_args.append(f"torch=={torch_version}")
-
-        # Install extension dependencies from config
-        if self.config["dependencies"] or self.config["share_torch"]:
-            logger.debug(f"Installing extension dependencies for {self.name}...")
-
-            # Re-validate dependencies before passing to subprocess (defense in depth)
-            safe_dependencies = []
-            for dep in self.config["dependencies"]:
-                validate_dependency(dep)
-                safe_dependencies.append(dep)
-
-            # In normal mode, suppress output unless there are actual changes
-            always_output = logger.isEnabledFor(logging.DEBUG)
-            try:
-                result = subprocess.run(  # noqa: S603
-                    uv_args + safe_dependencies + uv_common_args,
-                    capture_output=not always_output,
-                    text=True,
-                    check=True,
-                )
-                # Only show output if there were actual changes (installations/updates)
-                if (
-                    not always_output
-                    and result.stderr
-                    and ("Installed" in result.stderr or "Uninstalled" in result.stderr)
-                ):
-                    logger.info(f"Dependencies updated for {self.name}:\n{result.stderr.strip()}")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to install dependencies for {self.name}: {e}")
-                if e.stderr:
-                    logger.error(f"Error details: {e.stderr}")
-                raise
-        else:
-            logger.debug(f"No dependencies to install for {self.name}")
-
-    def join(self):
-        """
-        Wait for the extension process to finish.
-        """
+    def join(self) -> None:
+        """Join the child process, blocking until it exits."""
         self.proc.join()

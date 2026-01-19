@@ -16,33 +16,32 @@ Key Features:
 Basic Usage:
     >>> import pyisolate
     >>> import asyncio
-    >>>
     >>> async def main():
-    ...     config = pyisolate.ExtensionManagerConfig(
-    ...         venv_root_path="./venvs"
-    ...     )
+    ...     config = pyisolate.ExtensionManagerConfig(venv_root_path="./venvs")
     ...     manager = pyisolate.ExtensionManager(pyisolate.ExtensionBase, config)
-    ...
     ...     extension = await manager.load_extension(
     ...         pyisolate.ExtensionConfig(
     ...             name="my_extension",
     ...             module_path="./extensions/my_extension",
     ...             isolated=True,
-    ...             dependencies=["numpy>=2.0.0"]
+    ...             dependencies=["numpy>=2.0.0"],
     ...         )
     ...     )
-    ...
     ...     result = await extension.process_data([1, 2, 3])
     ...     await extension.stop()
-    >>>
     >>> asyncio.run(main())
 """
 
-from ._internal.shared import ProxiedSingleton, local_execution
+from typing import TYPE_CHECKING
+
+from ._internal.rpc_protocol import ProxiedSingleton, local_execution
 from .config import ExtensionConfig, ExtensionManagerConfig
 from .host import ExtensionBase, ExtensionManager
 
-__version__ = "0.0.1"
+if TYPE_CHECKING:
+    from .interfaces import IsolationAdapter
+
+__version__ = "0.9.0"
 
 __all__ = [
     "ExtensionBase",
@@ -51,4 +50,16 @@ __all__ = [
     "ExtensionConfig",
     "ProxiedSingleton",
     "local_execution",
+    "register_adapter",
+    "get_adapter",
 ]
+
+def register_adapter(adapter: "IsolationAdapter") -> None:
+    """Register an adapter instance for pyisolate to use."""
+    from ._internal.adapter_registry import AdapterRegistry
+    AdapterRegistry.register(adapter)
+
+def get_adapter() -> "IsolationAdapter | None":
+    """Get the registered adapter, or None if not registered."""
+    from ._internal.adapter_registry import AdapterRegistry
+    return AdapterRegistry.get()
