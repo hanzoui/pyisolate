@@ -36,6 +36,14 @@ async def measure_rpc_overhead(include_large_tensors=False):
     print("This benchmark measures RPC overhead using the existing example extensions.")
     print()
 
+    import os
+    if sys.platform == "linux" and os.environ.get("TMPDIR") != "/dev/shm":
+        print("WARNING: TMPDIR is not set to /dev/shm on Linux.")
+        print("If extensions use share_torch=True, execution WILL fail in strict sandboxes.")
+        print("Recommended: export TMPDIR=/dev/shm")
+        print("-" * 40)
+        print()
+
     print("Setting up extensions (this may take a moment)...")
 
     # Use the same setup as the example
