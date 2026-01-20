@@ -220,11 +220,12 @@ async def _async_uds_entrypoint(
         assert module_spec is not None
         assert module_spec.loader is not None
 
+        rpc.run()
+
         try:
             module = importlib.util.module_from_spec(module_spec)
             sys.modules[sys_module_name] = module
             module_spec.loader.exec_module(module)
-            rpc.run()
             await extension.on_module_loaded(module)
             await rpc.run_until_stopped()
         except asyncio.CancelledError:
