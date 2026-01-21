@@ -18,7 +18,6 @@ from typing import (
     Any,
     Literal,
     TypedDict,
-    Union,
 )
 
 if TYPE_CHECKING:
@@ -32,11 +31,13 @@ logger = logging.getLogger(__name__)
 # Data Structures
 # ---------------------------------------------------------------------------
 
+
 class CallableProxy:
     """
     Proxy for remote callables that preserves signature metadata.
     This allows inspect.signature() to work on the proxy
     """
+
     def __init__(self, metadata: dict[str, Any]):
         self._metadata = metadata
         self._name = metadata.get("name", "<remote_callable>")
@@ -53,7 +54,7 @@ class CallableProxy:
                 # generic default value if original had one (we don't serialize actual defaults)
                 default: str | object = inspect.Parameter.empty
                 if has_default:
-                   default = "<remote_default>"
+                    default = "<remote_default>"
 
                 # Map integer kind back to enum safely
                 # _ParameterKind enum values are standard:
@@ -68,15 +69,11 @@ class CallableProxy:
                     1: inspect.Parameter.POSITIONAL_OR_KEYWORD,
                     2: inspect.Parameter.VAR_POSITIONAL,
                     3: inspect.Parameter.KEYWORD_ONLY,
-                    4: inspect.Parameter.VAR_KEYWORD
+                    4: inspect.Parameter.VAR_KEYWORD,
                 }
                 kind = kind_map.get(kind_val, inspect.Parameter.POSITIONAL_OR_KEYWORD)
 
-                parameters.append(inspect.Parameter(
-                    name=name,
-                    kind=kind,
-                    default=default
-                ))
+                parameters.append(inspect.Parameter(name=name, kind=kind, default=default))
 
             self.__signature__ = inspect.Signature(parameters=parameters)
 
@@ -196,7 +193,7 @@ class RPCPendingRequest(TypedDict):
     kwargs: dict[str, Any]
 
 
-RPCMessage = Union[RPCRequest, RPCCallback, RPCResponse]
+RPCMessage = RPCRequest | RPCCallback | RPCResponse
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +217,7 @@ def debugprint(*args: Any, **kwargs: Any) -> None:
 # Serialization Functions
 # ---------------------------------------------------------------------------
 
+
 def _prepare_for_rpc(obj: Any) -> Any:
     """Recursively prepare objects for RPC transport.
 
@@ -235,6 +233,7 @@ def _prepare_for_rpc(obj: Any) -> Any:
 
     # Check for adapter-registered serializers first
     from .serialization_registry import SerializerRegistry
+
     registry = SerializerRegistry.get_instance()
 
     # Try exact type name first (fast path)
@@ -252,6 +251,7 @@ def _prepare_for_rpc(obj: Any) -> Any:
 
     try:
         import torch
+
         if isinstance(obj, torch.Tensor):
             if obj.is_cuda:
                 # Dynamic check to respect runtime activation in host.py
@@ -286,10 +286,12 @@ def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
     recursively processed.
     """
     from types import SimpleNamespace
+
     if isinstance(obj, SimpleNamespace):
         type_name = getattr(obj, "__pyisolate_type__", None)
         if type_name == "RemoteObjectHandle":
             from .remote_handle import RemoteObjectHandle
+
             return RemoteObjectHandle(obj.object_id, obj.type_name)
 
         # Check for embedded remote handle
@@ -301,6 +303,7 @@ def _tensor_to_cuda(obj: Any, device: Any | None = None) -> Any:
         return obj
 
     from .serialization_registry import SerializerRegistry
+
     registry = SerializerRegistry.get_instance()
 
     if isinstance(obj, dict):

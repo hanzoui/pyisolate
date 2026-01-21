@@ -1,4 +1,3 @@
-
 from pyisolate._internal import host
 
 
@@ -29,6 +28,7 @@ class FakeAdapter:
 
 def test_build_extension_snapshot_includes_adapter(monkeypatch):
     from pyisolate._internal.adapter_registry import AdapterRegistry
+
     monkeypatch.setattr(AdapterRegistry, "get", lambda: FakeAdapter())
 
     snapshot = host.build_extension_snapshot("/tmp/ComfyUI/custom_nodes/demo")
@@ -42,6 +42,7 @@ def test_build_extension_snapshot_includes_adapter(monkeypatch):
 
 def test_build_extension_snapshot_no_adapter(monkeypatch):
     from pyisolate._internal.adapter_registry import AdapterRegistry
+
     monkeypatch.setattr(AdapterRegistry, "get", lambda: None)
 
     snapshot = host.build_extension_snapshot("/tmp/nowhere")

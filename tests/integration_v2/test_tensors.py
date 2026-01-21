@@ -1,12 +1,13 @@
-
 import pytest
 import torch
 
 try:
     import numpy as np  # noqa: F401
+
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+
 
 @pytest.mark.asyncio
 async def test_tensor_roundtrip_cpu(reference_host):
@@ -32,6 +33,7 @@ async def test_tensor_roundtrip_cpu(reference_host):
     # Check if storage is shared or copied?
     # ReferenceHost usually uses file_system strategy for CPU.
 
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.asyncio
 async def test_cuda_allocation(reference_host):
@@ -51,6 +53,7 @@ async def test_cuda_allocation(reference_host):
     assert "cuda" in info["device"]
     assert info["allocated_bytes"] >= 10 * 1024 * 1024
     print("[TEST] CUDA allocation verified.")
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.asyncio

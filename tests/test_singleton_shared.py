@@ -1,6 +1,5 @@
 """Unit tests for SingletonMetaclass and ProxiedSingleton behavior."""
 
-
 import pytest
 
 from pyisolate._internal.rpc_protocol import (

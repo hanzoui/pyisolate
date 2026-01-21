@@ -1,4 +1,3 @@
-
 import pytest
 
 
@@ -21,6 +20,7 @@ async def test_extension_lifecycle(reference_host):
     # PYISOLATE_CHILD should be "1" in the child process
     child_env = await proxy.get_env_var("PYISOLATE_CHILD")
     assert child_env == "1"
+
 
 @pytest.mark.asyncio
 async def test_non_isolated_lifecycle(reference_host):

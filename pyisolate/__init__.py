@@ -54,12 +54,16 @@ __all__ = [
     "get_adapter",
 ]
 
+
 def register_adapter(adapter: "IsolationAdapter") -> None:
     """Register an adapter instance for pyisolate to use."""
     from ._internal.adapter_registry import AdapterRegistry
+
     AdapterRegistry.register(adapter)
+
 
 def get_adapter() -> "IsolationAdapter | None":
     """Get the registered adapter, or None if not registered."""
     from ._internal.adapter_registry import AdapterRegistry
+
     return AdapterRegistry.get()

@@ -7,6 +7,7 @@ import pytest
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
 logging.getLogger("pyisolate").setLevel(logging.DEBUG)
 
+
 @pytest.mark.asyncio
 async def test_debug_ping(reference_host):
     print("\n--- Starting Debug Ping ---")

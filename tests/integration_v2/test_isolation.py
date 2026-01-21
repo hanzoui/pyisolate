@@ -37,10 +37,10 @@ async def test_filesystem_barrier(reference_host):
         # Test 2: Write to /etc/hosts (should fail)
 
         try:
-           await proxy.write_file("/etc/hosts", "hacked")
-           write_succeeded = True
+            await proxy.write_file("/etc/hosts", "hacked")
+            write_succeeded = True
         except Exception:
-           write_succeeded = False
+            write_succeeded = False
 
         assert not write_succeeded, "Child should NOT be able to write to /etc/hosts"
 
@@ -53,6 +53,7 @@ async def test_filesystem_barrier(reference_host):
     finally:
         if os.path.exists(sensitive_path):
             os.unlink(sensitive_path)
+
 
 @pytest.mark.asyncio
 async def test_module_path_ro(reference_host):

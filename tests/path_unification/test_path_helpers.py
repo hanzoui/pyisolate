@@ -231,7 +231,7 @@ class TestIntegration:
             child_path = build_child_sys_path(
                 snapshot["sys_path"],
                 extras,
-                preferred_root=os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
+                preferred_root=os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI"),
             )
 
             # Verify structure - check that preferred_root is present

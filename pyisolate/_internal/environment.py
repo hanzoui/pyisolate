@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from ..config import ExtensionConfig
 from ..path_helpers import serialize_host_snapshot
@@ -20,7 +20,7 @@ from .torch_utils import get_torch_ecosystem_packages
 logger = logging.getLogger(__name__)
 
 _DANGEROUS_PATTERNS = ("&&", "||", "|", "`", "$", "\n", "\r", "\0")
-_UNSAFE_CHARS = frozenset(' \t\n\r|&$`()<>"\'\\!{}[]*?~#%=,')
+_UNSAFE_CHARS = frozenset(" \t\n\r|&$`()<>\"'\\!{}[]*?~#%=,")
 
 
 def normalize_extension_name(name: str) -> str:
@@ -83,7 +83,7 @@ def validate_path_within_root(path: Path, root: Path) -> None:
 @contextmanager
 def environment(**env_vars: Any) -> Iterator[None]:
     """Temporarily set environment variables inside a context."""
-    original: dict[str, Optional[str]] = {}
+    original: dict[str, str | None] = {}
     for key, value in env_vars.items():
         original[key] = os.environ.get(key)
         os.environ[key] = str(value)
@@ -106,6 +106,7 @@ def build_extension_snapshot(module_path: str) -> dict[str, object]:
     try:
         # v1.0: Check registry first
         from .adapter_registry import AdapterRegistry
+
         adapter = AdapterRegistry.get()
     except Exception as exc:
         logger.warning("Adapter load failed: %s", exc)
@@ -119,21 +120,21 @@ def build_extension_snapshot(module_path: str) -> dict[str, object]:
         # Register serializers in host process (needed for RPC serialization)
         try:
             from .serialization_registry import SerializerRegistry
+
             registry = SerializerRegistry.get_instance()
             adapter.register_serializers(registry)
         except Exception as exc:
             logger.warning("Adapter serializer registration failed: %s", exc)
 
     # v1.0: Serialize adapter reference for rehydration
-    adapter_ref: Optional[str] = None  # noqa: UP045
+    adapter_ref: str | None = None  # noqa: UP045
     if adapter:
         cls = adapter.__class__
         # Constraint: Adapter class must be importable (not defined in __main__ or closure)
         if cls.__module__ == "__main__":
-             logger.warning(
-                 "Adapter class %s is defined in __main__ and cannot be rehydrated in child",
-                 cls.__name__
-             )
+            logger.warning(
+                "Adapter class %s is defined in __main__ and cannot be rehydrated in child", cls.__name__
+            )
         else:
             adapter_ref = f"{cls.__module__}:{cls.__name__}"
 
@@ -173,8 +174,7 @@ def exclude_satisfied_requirements(
     from packaging.requirements import Requirement
 
     result = subprocess.run(  # noqa: S603  # Trusted: system pip executable
-        [str(python_exe), "-m", "pip", "list", "--format", "json"],
-        capture_output=True, text=True, check=True
+        [str(python_exe), "-m", "pip", "list", "--format", "json"], capture_output=True, text=True, check=True
     )
     installed = {pkg["name"].lower(): pkg["version"] for pkg in json.loads(result.stdout)}
     torch_ecosystem = get_torch_ecosystem_packages()
@@ -182,10 +182,10 @@ def exclude_satisfied_requirements(
     filtered = []
     for req_str in requirements:
         req_str_stripped = req_str.strip()
-        if req_str_stripped.startswith('-e ') or req_str_stripped == '-e':
+        if req_str_stripped.startswith("-e ") or req_str_stripped == "-e":
             filtered.append(req_str)
             continue
-        if req_str_stripped.startswith(('/', './')):
+        if req_str_stripped.startswith(("/", "./")):
             filtered.append(req_str)
             continue
 
@@ -222,9 +222,15 @@ def create_venv(venv_path: Path, config: ExtensionConfig) -> None:
         )
 
     if not venv_path.exists():
-        subprocess.check_call([  # noqa: S603  # Trusted: uv venv command
-            uv_path, "venv", str(venv_path), "--python", sys.executable
-        ])
+        subprocess.check_call(
+            [  # noqa: S603  # Trusted: uv venv command
+                uv_path,
+                "venv",
+                str(venv_path),
+                "--python",
+                sys.executable,
+            ]
+        )
 
         if config["share_torch"]:
             if os.name == "nt":
@@ -235,18 +241,14 @@ def create_venv(venv_path: Path, config: ExtensionConfig) -> None:
 
             if not child_site.exists():
                 raise RuntimeError(
-                    f"site-packages not found at expected path: {child_site}. "
-                    f"venv may be malformed."
+                    f"site-packages not found at expected path: {child_site}. venv may be malformed."
                 )
 
             parent_sites = site.getsitepackages()
             host_prefix = sys.prefix
             valid_parents = [p for p in parent_sites if p.startswith(host_prefix)]
             if not valid_parents:
-                valid_parents = [
-                    p for p in sys.path
-                    if "site-packages" in p and p.startswith(host_prefix)
-                ]
+                valid_parents = [p for p in sys.path if "site-packages" in p and p.startswith(host_prefix)]
             if not valid_parents:
                 raise RuntimeError(
                     "Could not determine parent site-packages path to inherit. "
@@ -269,11 +271,7 @@ def install_dependencies(venv_path: Path, config: ExtensionConfig, name: str) ->
     # Windows multiprocessing/Manager uses the interpreter path for spawned
     # processes. The explicit Scripts/python.exe path is required to avoid
     # handle issues when multiprocessing.set_executable is involved.
-    python_exe = (
-        venv_path / "Scripts" / "python.exe"
-        if os.name == "nt"
-        else venv_path / "bin" / "python"
-    )
+    python_exe = venv_path / "Scripts" / "python.exe" if os.name == "nt" else venv_path / "bin" / "python"
 
     if not python_exe.exists():
         raise RuntimeError(f"Python executable not found at {python_exe}")
@@ -302,9 +300,10 @@ def install_dependencies(venv_path: Path, config: ExtensionConfig, name: str) ->
     cache_dir.mkdir(exist_ok=True)
     common_args: list[str] = ["--cache-dir", str(cache_dir)]
 
-    torch_spec: Optional[str] = None
+    torch_spec: str | None = None
     if not config["share_torch"]:
         import torch
+
         torch_version: str = str(torch.__version__)
         if torch_version.endswith("+cpu"):
             torch_version = torch_version[:-4]

@@ -19,7 +19,7 @@ import sys
 from contextlib import AbstractContextManager as ContextManager
 from contextlib import nullcontext
 from logging.handlers import QueueHandler
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from ..config import ExtensionConfig
 from ..interfaces import IsolationAdapter
@@ -29,7 +29,7 @@ from .rpc_protocol import AsyncRPC, ProxiedSingleton, set_child_rpc_instance
 
 logger = logging.getLogger(__name__)
 
-_adapter: Optional[IsolationAdapter] = None
+_adapter: IsolationAdapter | None = None
 _bootstrap_done = False
 
 
@@ -93,6 +93,7 @@ async def async_entrypoint(
     context: ContextManager[Any] = nullcontext()
     if config["share_torch"]:
         import torch
+
         context = cast(ContextManager[Any], torch.inference_mode())
 
     if not os.path.isdir(module_path):
@@ -149,7 +150,11 @@ def entrypoint(
     """
     asyncio.run(
         async_entrypoint(
-            module_path, extension_type, config,
-            to_extension, from_extension, log_queue,
+            module_path,
+            extension_type,
+            config,
+            to_extension,
+            from_extension,
+            log_queue,
         )
     )

@@ -11,6 +11,7 @@ from pyisolate._internal.rpc_transports import RPCTransport
 
 class MockTransport(RPCTransport):
     """Mock transport that blocks on recv until closed."""
+
     def __init__(self):
         self.recv_future = asyncio.Future()
         self.sent_messages = []
@@ -35,6 +36,7 @@ class MockTransport(RPCTransport):
 
 class BlockingMockTransport(RPCTransport):
     """Transport that allows controlling recv blocking."""
+
     def __init__(self):
         self.recv_queue = asyncio.Queue()
         self.closed = False
@@ -53,6 +55,7 @@ class BlockingMockTransport(RPCTransport):
         # But actually, the RPC implementation calls transport.recv()
         # which is synchronous.
         import time
+
         while not self.closed:
             time.sleep(0.01)
         raise ConnectionError("Closed during block")
@@ -131,4 +134,3 @@ async def test_shutdown_cancels_run_until_stopped():
     # Should be done now
     await asyncio.wait_for(stop_task, timeout=1.0)
     assert stop_task.done()
-

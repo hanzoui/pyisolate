@@ -38,6 +38,7 @@ class TestSerializerRegistryContract:
 
     def test_register_serializer(self):
         """Can register a serializer for a type."""
+
         def serialize(obj):
             return {"value": obj}
 
@@ -47,6 +48,7 @@ class TestSerializerRegistryContract:
 
     def test_register_with_deserializer(self):
         """Can register both serializer and deserializer."""
+
         def serialize(obj):
             return {"v": obj}
 
@@ -60,6 +62,7 @@ class TestSerializerRegistryContract:
 
     def test_get_serializer_returns_callable(self):
         """get_serializer returns the registered callable."""
+
         def my_serializer(obj):
             return str(obj)
 
@@ -70,6 +73,7 @@ class TestSerializerRegistryContract:
 
     def test_get_deserializer_returns_callable(self):
         """get_deserializer returns the registered callable."""
+
         def my_deserializer(data):
             return int(data)
 

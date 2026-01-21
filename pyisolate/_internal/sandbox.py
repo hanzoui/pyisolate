@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .sandbox_detect import RestrictionModel
 
@@ -12,35 +12,35 @@ from .sandbox_detect import RestrictionModel
 # Everything else is denied. This is a security-critical list.
 
 SANDBOX_SYSTEM_PATHS: list[str] = [
-    "/usr",               # System binaries and libraries
-    "/lib",               # Core libraries
-    "/lib64",             # 64-bit libraries (if exists)
-    "/lib32",             # 32-bit libraries (if exists)
-    "/bin",               # Essential binaries
-    "/sbin",              # System binaries
+    "/usr",  # System binaries and libraries
+    "/lib",  # Core libraries
+    "/lib64",  # 64-bit libraries (if exists)
+    "/lib32",  # 32-bit libraries (if exists)
+    "/bin",  # Essential binaries
+    "/sbin",  # System binaries
     "/etc/alternatives",  # Symlink management
-    "/etc/ld.so.cache",   # Dynamic linker cache
-    "/etc/ld.so.conf",    # Dynamic linker config
+    "/etc/ld.so.cache",  # Dynamic linker cache
+    "/etc/ld.so.conf",  # Dynamic linker config
     "/etc/ld.so.conf.d",  # Dynamic linker config dir
-    "/etc/ssl",           # SSL certificates
+    "/etc/ssl",  # SSL certificates
     "/etc/ca-certificates",  # CA certificates
-    "/etc/pki",           # PKI certificates (RHEL/CentOS)
-    "/etc/resolv.conf",   # DNS (if network enabled)
-    "/etc/hosts",         # Host resolution
-    "/etc/nsswitch.conf", # Name service switch config
-    "/etc/passwd",        # User info (read-only, needed for getpwuid)
-    "/etc/group",         # Group info
-    "/etc/localtime",     # Timezone
-    "/etc/timezone",      # Timezone name
+    "/etc/pki",  # PKI certificates (RHEL/CentOS)
+    "/etc/resolv.conf",  # DNS (if network enabled)
+    "/etc/hosts",  # Host resolution
+    "/etc/nsswitch.conf",  # Name service switch config
+    "/etc/passwd",  # User info (read-only, needed for getpwuid)
+    "/etc/group",  # Group info
+    "/etc/localtime",  # Timezone
+    "/etc/timezone",  # Timezone name
 ]
 
 # GPU device paths for CUDA passthrough
 GPU_PASSTHROUGH_PATTERNS: list[str] = [
-    "nvidia*",            # GPU devices
-    "nvidiactl",          # Control device
-    "nvidia-uvm",         # Unified memory
-    "nvidia-uvm-tools",   # UVM tools
-    "dri",                # Direct Rendering Infrastructure
+    "nvidia*",  # GPU devices
+    "nvidiactl",  # Control device
+    "nvidia-uvm",  # Unified memory
+    "nvidia-uvm-tools",  # UVM tools
+    "dri",  # Direct Rendering Infrastructure
 ]
 
 
@@ -50,9 +50,9 @@ def build_bwrap_command(
     venv_path: str,
     uds_address: str,
     allow_gpu: bool = False,
-    sandbox_config: Optional[dict[str, Any]] = None,
+    sandbox_config: dict[str, Any] | None = None,
     restriction_model: RestrictionModel = RestrictionModel.NONE,
-    env_overrides: Optional[dict[str, str]] = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the bubblewrap command for launching a sandboxed process.
 
@@ -136,7 +136,7 @@ def build_bwrap_command(
         # CUDA library and runtime paths (read-only)
         # /usr/local/cuda is covered by /usr bind, so we skip it to avoid symlink/mount issues
         cuda_paths = {
-            "/opt/cuda",              # Alternative CUDA location
+            "/opt/cuda",  # Alternative CUDA location
             "/run/nvidia-persistenced",  # Persistence daemon
         }
 
@@ -147,11 +147,11 @@ def build_bwrap_command(
 
         for cuda_path in cuda_paths:
             if os.path.exists(cuda_path):
-                 # Skip if already covered by /usr bind
+                # Skip if already covered by /usr bind
                 if cuda_path.startswith("/usr/") and not cuda_path.startswith("/usr/local/"):
-                     # Actually /usr/local is in /usr.
-                     # Safe heuristic: if it starts with /usr, we assume covered.
-                     continue
+                    # Actually /usr/local is in /usr.
+                    # Safe heuristic: if it starts with /usr, we assume covered.
+                    continue
                 cmd.extend(["--ro-bind", cuda_path, cuda_path])
 
     # Network Isolation
@@ -162,7 +162,6 @@ def build_bwrap_command(
     # If allow_network is True, we simply don't unshare, inheriting host network.
 
     # MOVED: path bindings moved to end to prevent masking by RO binds
-
 
     # 1. Host venv site-packages: READ-ONLY (for share_torch inheritance via .pth file)
     # The child venv has a .pth file pointing to host site-packages for torch sharing
@@ -175,19 +174,21 @@ def build_bwrap_command(
 
     # 2. PyIsolate package path: READ-ONLY (needed for sandbox_client/uds_client)
     import pyisolate as pyisolate_pkg
+
     pyisolate_path = Path(pyisolate_pkg.__file__).parent.parent.resolve()
     cmd.extend(["--ro-bind", str(pyisolate_path), str(pyisolate_path)])
 
     # 3. ComfyUI package path: READ-ONLY (needed for comfy.isolation.adapter)
     try:
         import comfy  # type: ignore[import]
+
         if hasattr(comfy, "__file__") and comfy.__file__:
             comfy_path = Path(comfy.__file__).parent.parent.resolve()
         elif hasattr(comfy, "__path__"):
-             # Namespace package support
+            # Namespace package support
             comfy_path = Path(list(comfy.__path__)[0]).parent.resolve()
         else:
-             comfy_path = None
+            comfy_path = None
 
         if comfy_path:
             cmd.extend(["--ro-bind", str(comfy_path), str(comfy_path)])
@@ -253,7 +254,7 @@ def build_bwrap_command(
     # Standard environment
     for env_var in ["PATH", "HOME", "LANG", "LC_ALL"]:
         if env_var in os.environ:
-             cmd.extend(["--setenv", env_var, os.environ[env_var]])
+            cmd.extend(["--setenv", env_var, os.environ[env_var]])
 
     # CUDA/GPU environment variables (critical for GPU access)
     cuda_env_vars = [

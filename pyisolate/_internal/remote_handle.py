@@ -4,6 +4,7 @@ RemoteObjectHandle is a lightweight reference to an object living in another
 process. It carries only the object_id and type_name, allowing the receiving
 process to lazily fetch the actual object via RPC when needed.
 """
+
 from __future__ import annotations
 
 
@@ -20,7 +21,7 @@ class RemoteObjectHandle:
     """
 
     # Preserve module identity for pickling compatibility
-    __module__ = 'pyisolate._internal.remote_handle'
+    __module__ = "pyisolate._internal.remote_handle"
 
     def __init__(self, object_id: str, type_name: str) -> None:
         self.object_id = object_id

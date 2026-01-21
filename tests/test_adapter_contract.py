@@ -8,7 +8,6 @@ The MockHostAdapter from fixtures serves as the reference implementation
 and is used to demonstrate expected behavior for each protocol method.
 """
 
-
 from pyisolate._internal.rpc_protocol import ProxiedSingleton
 from pyisolate._internal.serialization_registry import SerializerRegistry
 from pyisolate.interfaces import IsolationAdapter

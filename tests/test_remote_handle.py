@@ -3,7 +3,6 @@
 These tests verify the RemoteObjectHandle behavior without RPC.
 """
 
-
 from pyisolate._internal.remote_handle import RemoteObjectHandle
 
 

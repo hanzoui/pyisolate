@@ -112,6 +112,7 @@ dependencies:
 
         # Parse manifest
         import yaml
+
         with open(manifest_path) as f:
             manifest = yaml.safe_load(f)
 
@@ -128,6 +129,7 @@ dependencies: []
         manifest_path.write_text(manifest_content)
 
         import yaml
+
         with open(manifest_path) as f:
             manifest = yaml.safe_load(f)
 

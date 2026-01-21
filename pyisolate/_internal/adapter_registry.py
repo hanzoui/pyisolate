@@ -1,7 +1,6 @@
 """Adapter registry for global registration of isolation adapters."""
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from ..interfaces import IsolationAdapter
 
@@ -9,7 +8,7 @@ from ..interfaces import IsolationAdapter
 class AdapterRegistry:
     """Singleton registry for the active isolation adapter."""
 
-    _instance: Optional[IsolationAdapter] = None  # noqa: UP045
+    _instance: IsolationAdapter | None = None  # noqa: UP045
 
     @classmethod
     def register(cls, adapter: IsolationAdapter) -> None:
@@ -22,10 +21,7 @@ class AdapterRegistry:
             # Idempotency check: if registering the exact same instance, allow it.
             if cls._instance is adapter:
                 return
-            raise RuntimeError(
-                f"Adapter already registered: {cls._instance}. "
-                "Call unregister() first."
-            )
+            raise RuntimeError(f"Adapter already registered: {cls._instance}. Call unregister() first.")
         cls._instance = adapter
 
     @classmethod

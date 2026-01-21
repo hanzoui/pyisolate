@@ -27,6 +27,7 @@ def _mockbuild_bwrap_command(**kwargs: Any) -> list[str]:
     # Mock comfy package to raise ImportError (not in ComfyUI context)
     # This simulates running outside ComfyUI
     import builtins
+
     original_import = builtins.__import__
 
     def mock_import(name: str, *args: Any, **kw: Any) -> Any:
@@ -44,6 +45,7 @@ def _mockbuild_bwrap_command(**kwargs: Any) -> list[str]:
         patch.object(builtins, "__import__", mock_import),
     ):
         from pyisolate._internal.host import build_bwrap_command
+
         return build_bwrap_command(**kwargs)
 
 
@@ -57,7 +59,6 @@ class TestLifecycleCoupling:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -70,7 +71,6 @@ class TestLifecycleCoupling:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -85,7 +85,6 @@ class TestLifecycleCoupling:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.UBUNTU_APPARMOR,
         )
@@ -106,7 +105,6 @@ class TestNamespaceIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -122,7 +120,6 @@ class TestNamespaceIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.UBUNTU_APPARMOR,
         )
@@ -137,7 +134,6 @@ class TestNamespaceIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.RHEL_SYSCTL,
         )
@@ -150,7 +146,6 @@ class TestNamespaceIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.SELINUX,
         )
@@ -163,7 +158,6 @@ class TestNamespaceIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.ARCH_HARDENED,
         )
@@ -210,7 +204,6 @@ class TestUDSMountTopology:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -229,7 +222,6 @@ class TestUDSMountTopology:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
             uid=1000,
@@ -244,7 +236,6 @@ class TestUDSMountTopology:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/5000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
             uid=5000,
@@ -259,7 +250,6 @@ class TestUDSMountTopology:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -286,7 +276,6 @@ class TestGPUPassthrough:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=True,
             restriction_model=RestrictionModel.NONE,
         )
@@ -305,7 +294,6 @@ class TestGPUPassthrough:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -328,7 +316,6 @@ class TestFilesystemIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -347,7 +334,6 @@ class TestFilesystemIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -366,7 +352,6 @@ class TestFilesystemIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -380,7 +365,6 @@ class TestFilesystemIsolation:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -399,7 +383,6 @@ class TestEnvironmentVariables:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -424,7 +407,6 @@ class TestEnvironmentVariables:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address=uds_path,
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -452,7 +434,6 @@ class TestCommandStructure:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )
@@ -465,7 +446,6 @@ class TestCommandStructure:
             module_path="/path/to/module",
             venv_path="/venv",
             uds_address="/run/user/1000/pyisolate/test.sock",
-
             allow_gpu=False,
             restriction_model=RestrictionModel.NONE,
         )

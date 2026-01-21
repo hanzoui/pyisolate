@@ -18,12 +18,11 @@ import logging
 import queue
 import threading
 import uuid
+from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     TypeVar,
-    Union,
     cast,
     get_type_hints,
 )
@@ -123,6 +122,7 @@ class LocalMethodRegistry:
 # AsyncRPC Class
 # ---------------------------------------------------------------------------
 
+
 class AsyncRPC:
     """Asynchronous RPC layer for inter-process communication.
 
@@ -140,7 +140,8 @@ class AsyncRPC:
     ):
         self.id = str(uuid.uuid4())
         self.handling_call_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-            self.id + "_handling_call_id", default=None)
+            self.id + "_handling_call_id", default=None
+        )
 
         # Support both legacy queue interface and new transport interface
         if transport is not None:
@@ -263,8 +264,7 @@ class AsyncRPC:
 
     async def stop(self) -> None:
         assert self.blocking_future is not None, (
-            "Cannot stop RPC: blocking_future is None. "
-            "RPC event loop was never started or already stopped."
+            "Cannot stop RPC: blocking_future is None. RPC event loop was never started or already stopped."
         )
         self.blocking_future.set_result(None)
 
@@ -326,9 +326,7 @@ class AsyncRPC:
             # Log full exception context for debugging; convert to string for serialization.
             obj_id = request.get("object_id", request.get("callback_id"))
             logger.exception("RPC dispatch failed for %s", obj_id)
-            response = RPCResponse(
-                kind="response", call_id=request["call_id"], result=None, error=str(exc)
-            )
+            response = RPCResponse(kind="response", call_id=request["call_id"], result=None, error=str(exc))
 
         # Try to send response; if serialization fails, send error response instead
         try:
@@ -336,15 +334,14 @@ class AsyncRPC:
         except (TypeError, ValueError) as serialize_exc:
             # FAIL LOUD: Log and propagate serialization failures
             logger.error(
-                "RPC response serialization failed for call_id=%s: %s",
-                request["call_id"], serialize_exc
+                "RPC response serialization failed for call_id=%s: %s", request["call_id"], serialize_exc
             )
             # Try to send a minimal error response (no result, just error string)
             error_response = RPCResponse(
                 kind="response",
                 call_id=request["call_id"],
                 result=None,
-                error=f"Response serialization failed: {serialize_exc}"
+                error=f"Response serialization failed: {serialize_exc}",
             )
             try:
                 self._transport.send(_prepare_for_rpc(error_response))
@@ -473,10 +470,12 @@ class AsyncRPC:
                         try:
                             if item.get("error"):
                                 calling_loop.call_soon_threadsafe(
-                                    pending_request["future"].set_exception, Exception(item["error"]))
+                                    pending_request["future"].set_exception, Exception(item["error"])
+                                )
                             else:
                                 calling_loop.call_soon_threadsafe(
-                                    pending_request["future"].set_result, item["result"])
+                                    pending_request["future"].set_result, item["result"]
+                                )
 
                         except RuntimeError as e:
                             if "Event loop is closed" in str(e):
@@ -487,7 +486,7 @@ class AsyncRPC:
                                 logger.error(f"RPC Response Delivery Failed: {e}")
 
                 elif item["kind"] in ("call", "callback"):
-                    request = cast(Union[RPCRequest, RPCCallback], item)
+                    request = cast(RPCRequest | RPCCallback, item)
                     request_parent = request.get("parent_call_id")
 
                     # Get a valid loop for dispatching this request
@@ -503,7 +502,7 @@ class AsyncRPC:
                             kind="response",
                             call_id=request["call_id"],
                             result=None,
-                            error=f"No valid event loop available: {e}"
+                            error=f"No valid event loop available: {e}",
                         )
                         self._transport.send(_prepare_for_rpc(error_response))
                         continue
@@ -536,6 +535,7 @@ class AsyncRPC:
 
             except Exception as outer_exc:
                 import traceback
+
                 traceback.print_exc()
                 logger.error(f"RPC Recv Thread CRASHED: {outer_exc}")
 
@@ -577,7 +577,8 @@ class AsyncRPC:
                             if not calling_loop.is_closed():
                                 with contextlib.suppress(RuntimeError):
                                     calling_loop.call_soon_threadsafe(
-                                        pending["future"].set_exception, RuntimeError(str(exc)))
+                                        pending["future"].set_exception, RuntimeError(str(exc))
+                                    )
                         # Don't raise, just log, so thread stays alive
                         logger.error(f"RPC Send Failed: {exc}")
 
@@ -609,7 +610,8 @@ class AsyncRPC:
                             if not calling_loop.is_closed():
                                 with contextlib.suppress(RuntimeError):
                                     calling_loop.call_soon_threadsafe(
-                                        pending["future"].set_exception, RuntimeError(str(exc)))
+                                        pending["future"].set_exception, RuntimeError(str(exc))
+                                    )
                         logger.error(f"RPC Callback Send Failed: {exc}")
 
                 elif typed_item["kind"] == "response":
@@ -618,6 +620,7 @@ class AsyncRPC:
 
             except Exception as outer_exc:
                 import traceback
+
                 traceback.print_exc()
                 logger.error(f"RPC Send Thread CRASHED: {outer_exc}")
 
@@ -625,6 +628,7 @@ class AsyncRPC:
 # ---------------------------------------------------------------------------
 # Singleton Pattern
 # ---------------------------------------------------------------------------
+
 
 class SingletonMetaclass(type):
     _instances: dict[type, Any] = {}

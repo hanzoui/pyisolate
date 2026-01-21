@@ -4,6 +4,7 @@ This module resolves the "config before path" paradox by applying the host's
 snapshot (sys.path + adapter metadata) before any heavy imports occur in the
 child process.
 """
+
 from __future__ import annotations
 
 import json
@@ -56,7 +57,6 @@ def _apply_sys_path(snapshot: dict[str, Any]) -> None:
 
     sys.path[:] = merged
     logger.debug("Applied %d paths from snapshot (preferred_root=%s)", len(child_paths), preferred_root)
-
 
 
 def _rehydrate_adapter(start_ref: str) -> IsolationAdapter:
@@ -134,8 +134,8 @@ def bootstrap_child() -> IsolationAdapter | None:
             logger.warning("Failed to rehydrate adapter from ref %s: %s", adapter_ref, exc)
 
     if not adapter and adapter_ref:
-          # If we had info but failed to load, that's an error
-          raise ValueError("Snapshot contained adapter info but adapter could not be loaded")
+        # If we had info but failed to load, that's an error
+        raise ValueError("Snapshot contained adapter info but adapter could not be loaded")
 
     if adapter:
         adapter.setup_child_environment(snapshot)

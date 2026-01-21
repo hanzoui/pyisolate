@@ -26,22 +26,22 @@ logger = logging.getLogger(__name__)
 class SandboxMode(Enum):
     """Sandbox enforcement mode."""
 
-    DISABLED = "disabled"    # Never use sandbox
+    DISABLED = "disabled"  # Never use sandbox
     PREFERRED = "preferred"  # Use if available, warn and fallback if not
-    REQUIRED = "required"    # Fail-loud if unavailable
+    REQUIRED = "required"  # Fail-loud if unavailable
 
 
 class RestrictionModel(Enum):
     """Detected namespace restriction model."""
 
-    NONE = "none"                        # No restrictions detected
-    RHEL_SYSCTL = "rhel_sysctl"          # max_user_namespaces = 0
+    NONE = "none"  # No restrictions detected
+    RHEL_SYSCTL = "rhel_sysctl"  # max_user_namespaces = 0
     UBUNTU_APPARMOR = "ubuntu_apparmor"  # apparmor_restrict_unprivileged_userns = 1
-    SELINUX = "selinux"                  # SELinux denial
-    ARCH_HARDENED = "arch_hardened"      # Hardened kernel
-    PLATFORM_UNSUPPORTED = "platform"    # Non-Linux platform
-    BWRAP_MISSING = "bwrap_missing"      # bwrap binary not found
-    UNKNOWN = "unknown"                  # Unknown restriction
+    SELINUX = "selinux"  # SELinux denial
+    ARCH_HARDENED = "arch_hardened"  # Hardened kernel
+    PLATFORM_UNSUPPORTED = "platform"  # Non-Linux platform
+    BWRAP_MISSING = "bwrap_missing"  # bwrap binary not found
+    UNKNOWN = "unknown"  # Unknown restriction
 
 
 # Distro-specific remediation messages
@@ -58,22 +58,15 @@ _REMEDIATION_MESSAGES: dict[RestrictionModel, str] = {
         "sudo apparmor_parser -r /etc/apparmor.d/bwrap"
     ),
     RestrictionModel.SELINUX: (
-        "SELinux blocks namespace operations. Check: "
-        "ausearch -m avc -ts recent | audit2allow"
+        "SELinux blocks namespace operations. Check: ausearch -m avc -ts recent | audit2allow"
     ),
-    RestrictionModel.ARCH_HARDENED: (
-        "Hardened kernel detected. Install: pacman -S bubblewrap-suid"
-    ),
-    RestrictionModel.PLATFORM_UNSUPPORTED: (
-        "Sandbox isolation requires Linux. Current platform: {platform}"
-    ),
+    RestrictionModel.ARCH_HARDENED: ("Hardened kernel detected. Install: pacman -S bubblewrap-suid"),
+    RestrictionModel.PLATFORM_UNSUPPORTED: ("Sandbox isolation requires Linux. Current platform: {platform}"),
     RestrictionModel.BWRAP_MISSING: (
         "bwrap binary not found. Install: apt install bubblewrap (Debian/Ubuntu) "
         "or dnf install bubblewrap (Fedora/RHEL)"
     ),
-    RestrictionModel.UNKNOWN: (
-        "Unknown restriction. bwrap test failed: {error}"
-    ),
+    RestrictionModel.UNKNOWN: ("Unknown restriction. bwrap test failed: {error}"),
     RestrictionModel.NONE: "",
 }
 
@@ -151,12 +144,22 @@ def _test_bwrap(bwrap_path: str) -> tuple[bool, str]:
             [
                 bwrap_path,
                 "--unshare-user-try",
-                "--dev", "/dev",
-                "--proc", "/proc",
-                "--ro-bind", "/usr", "/usr",
-                "--ro-bind", "/bin", "/bin",
-                "--ro-bind", "/lib", "/lib",
-                "--ro-bind", "/lib64", "/lib64",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--ro-bind",
+                "/bin",
+                "/bin",
+                "--ro-bind",
+                "/lib",
+                "/lib",
+                "--ro-bind",
+                "/lib64",
+                "/lib64",
                 "/usr/bin/true",
             ],
             capture_output=True,

@@ -102,7 +102,7 @@ async def deserialize_from_isolation(data: Any, extension: Any = None, _nested: 
         if deserializer:
             # For async deserializers, we need special handling
             result = deserializer(data)
-            if hasattr(result, '__await__'):
+            if hasattr(result, "__await__"):
                 return await result
             return result
 

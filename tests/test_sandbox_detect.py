@@ -201,12 +201,15 @@ class TestErrorClassification:
 
     def test_classify_selinux_error(self) -> None:
         """Test SELinux error classification."""
-        with patch(
-            "pyisolate._internal.sandbox_detect._check_ubuntu_apparmor_restriction",
-            return_value=False,
-        ), patch(
-            "pyisolate._internal.sandbox_detect._check_selinux_enforcing",
-            return_value=True,
+        with (
+            patch(
+                "pyisolate._internal.sandbox_detect._check_ubuntu_apparmor_restriction",
+                return_value=False,
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_selinux_enforcing",
+                return_value=True,
+            ),
         ):
             model = _classify_error("Permission denied")
             assert model == RestrictionModel.SELINUX
@@ -246,12 +249,15 @@ class TestErrorClassification:
 
     def test_classify_permission_denied_neither_apparmor_nor_selinux(self) -> None:
         """Test permission denied when neither AppArmor nor SELinux."""
-        with patch(
-            "pyisolate._internal.sandbox_detect._check_ubuntu_apparmor_restriction",
-            return_value=False,
-        ), patch(
-            "pyisolate._internal.sandbox_detect._check_selinux_enforcing",
-            return_value=False,
+        with (
+            patch(
+                "pyisolate._internal.sandbox_detect._check_ubuntu_apparmor_restriction",
+                return_value=False,
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_selinux_enforcing",
+                return_value=False,
+            ),
         ):
             model = _classify_error("Permission denied")
             assert model == RestrictionModel.UNKNOWN
@@ -287,9 +293,12 @@ class TestFullDetection:
     def test_rhel_restriction_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test RHEL sysctl blocks before bwrap test."""
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch("shutil.which", return_value="/usr/bin/bwrap"), patch(
-            "pyisolate._internal.sandbox_detect._check_rhel_restriction",
-            return_value=True,
+        with (
+            patch("shutil.which", return_value="/usr/bin/bwrap"),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_rhel_restriction",
+                return_value=True,
+            ),
         ):
             cap = detect_sandbox_capability()
             assert cap.available is False
@@ -299,12 +308,16 @@ class TestFullDetection:
     def test_full_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test full detection success path."""
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch("shutil.which", return_value="/usr/bin/bwrap"), patch(
-            "pyisolate._internal.sandbox_detect._check_rhel_restriction",
-            return_value=False,
-        ), patch(
-            "pyisolate._internal.sandbox_detect._test_bwrap",
-            return_value=(True, ""),
+        with (
+            patch("shutil.which", return_value="/usr/bin/bwrap"),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_rhel_restriction",
+                return_value=False,
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._test_bwrap",
+                return_value=(True, ""),
+            ),
         ):
             cap = detect_sandbox_capability()
             assert cap.available is True
@@ -315,15 +328,20 @@ class TestFullDetection:
     def test_ubuntu_apparmor_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test Ubuntu AppArmor detection and remediation."""
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch("shutil.which", return_value="/usr/bin/bwrap"), patch(
-            "pyisolate._internal.sandbox_detect._check_rhel_restriction",
-            return_value=False,
-        ), patch(
-            "pyisolate._internal.sandbox_detect._test_bwrap",
-            return_value=(False, "Permission denied: uid map"),
-        ), patch(
-            "pyisolate._internal.sandbox_detect._check_ubuntu_apparmor_restriction",
-            return_value=True,
+        with (
+            patch("shutil.which", return_value="/usr/bin/bwrap"),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_rhel_restriction",
+                return_value=False,
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._test_bwrap",
+                return_value=(False, "Permission denied: uid map"),
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_ubuntu_apparmor_restriction",
+                return_value=True,
+            ),
         ):
             cap = detect_sandbox_capability()
             assert cap.available is False
@@ -334,15 +352,20 @@ class TestFullDetection:
     def test_unknown_error_includes_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that unknown errors include the raw error in remediation."""
         monkeypatch.setattr(sys, "platform", "linux")
-        with patch("shutil.which", return_value="/usr/bin/bwrap"), patch(
-            "pyisolate._internal.sandbox_detect._check_rhel_restriction",
-            return_value=False,
-        ), patch(
-            "pyisolate._internal.sandbox_detect._test_bwrap",
-            return_value=(False, "Some weird unknown error"),
-        ), patch(
-            "pyisolate._internal.sandbox_detect._classify_error",
-            return_value=RestrictionModel.UNKNOWN,
+        with (
+            patch("shutil.which", return_value="/usr/bin/bwrap"),
+            patch(
+                "pyisolate._internal.sandbox_detect._check_rhel_restriction",
+                return_value=False,
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._test_bwrap",
+                return_value=(False, "Some weird unknown error"),
+            ),
+            patch(
+                "pyisolate._internal.sandbox_detect._classify_error",
+                return_value=RestrictionModel.UNKNOWN,
+            ),
         ):
             cap = detect_sandbox_capability()
             assert cap.available is False

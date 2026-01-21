@@ -9,7 +9,7 @@ import tempfile
 import threading
 from logging.handlers import QueueListener
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 from ..config import ExtensionConfig
 from ..shared import ExtensionBase
@@ -47,8 +47,9 @@ class _DeduplicationFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         import time
+
         msg_content = record.getMessage()
-        msg_hash = hashlib.sha256(msg_content.encode('utf-8')).hexdigest()
+        msg_hash = hashlib.sha256(msg_content.encode("utf-8")).hexdigest()
         now = time.time()
 
         if msg_hash in self.last_seen and now - self.last_seen[msg_hash] < self.timeout:
@@ -103,6 +104,7 @@ class Extension(Generic[T]):
             try:
                 # v1.0: Check registry
                 from .adapter_registry import AdapterRegistry
+
                 adapter = AdapterRegistry.get()
 
                 if adapter:
@@ -117,21 +119,23 @@ class Extension(Generic[T]):
         self.mp: Any
         if self.config["share_torch"]:
             import torch.multiprocessing
+
             self.mp = torch.multiprocessing
         else:
             import multiprocessing
+
             self.mp = multiprocessing
 
         self._process_initialized = False
-        self.log_queue: Optional[Any] = None
-        self.log_listener: Optional[QueueListener] = None
+        self.log_queue: Any | None = None
+        self.log_listener: QueueListener | None = None
 
         # UDS / JSON-RPC resources
-        self._uds_listener: Optional[Any] = None
-        self._uds_path: Optional[str] = None
-        self._client_sock: Optional[Any] = None
+        self._uds_listener: Any | None = None
+        self._uds_path: str | None = None
+        self._client_sock: Any | None = None
 
-        self.extension_proxy: Optional[T] = None
+        self.extension_proxy: T | None = None
 
     def ensure_process_started(self) -> None:
         """Start the isolated process if it has not been initialized."""
@@ -161,7 +165,7 @@ class Extension(Generic[T]):
 
         # Monotonically enable IPC logic. Do not disable if already enabled by another extension.
         if self._cuda_ipc_enabled:
-             os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1"
+            os.environ["PYISOLATE_ENABLE_CUDA_IPC"] = "1"
 
         # PYISOLATE_CHILD is set in the child's env dict, NOT in os.environ
         # Setting it in os.environ would affect the HOST process serialization logic
@@ -171,6 +175,7 @@ class Extension(Generic[T]):
             # causing issues when __main__ is ComfyUI's main.py. Use a simple queue
             # from the threading module instead - logs go to stdout anyway.
             import queue
+
             self.log_queue = queue.Queue()  # type: ignore[assignment]
         else:
             self.log_queue = self.ctx.Queue()
@@ -186,11 +191,13 @@ class Extension(Generic[T]):
 
         # Register tensor serializer for JSON-RPC
         from .serialization_registry import SerializerRegistry
+
         register_tensor_serializer(SerializerRegistry.get_instance())
 
         # Ensure file_system strategy for CPU tensors
         import torch
-        torch.multiprocessing.set_sharing_strategy('file_system')
+
+        torch.multiprocessing.set_sharing_strategy("file_system")
 
         self.proc = self.__launch()
 
@@ -339,6 +346,7 @@ class Extension(Generic[T]):
             # We must bind the site-packages of the HOST python (or at least where torch is)
             # because the isolated venv is often a thin venv sharing deps or expecting them.
             import site
+
             extra_binds = []
 
             # Add standard site-packages
@@ -370,7 +378,6 @@ class Extension(Generic[T]):
 
             # bwrap uses --setenv to pass variables, so the `env` arg to Popen
 
-
             # bwrap uses --setenv to pass variables, so the `env` arg to Popen
             # only affects the bwrap process itself (path lookup, etc), not the child.
             # We must NOT pass these vars in `env` because they are already in `cmd`.
@@ -392,7 +399,7 @@ class Extension(Generic[T]):
         proc = subprocess.Popen(
             cmd,
             env=env,
-            stdout=None, # Inherit stdout/stderr for now so we see logs
+            stdout=None,  # Inherit stdout/stderr for now so we see logs
             stderr=None,
             close_fds=True,
         )
@@ -437,7 +444,8 @@ class Extension(Generic[T]):
         safe_config = dict(self.config)  # type: ignore[arg-type]
         if "apis" in safe_config:
             api_list: list[str] = [
-                f"{api.__module__}.{api.__name__}" for api in self.config["apis"]  # type: ignore[union-attr]
+                f"{api.__module__}.{api.__name__}"
+                for api in self.config["apis"]  # type: ignore[union-attr]
             ]
             safe_config["apis"] = api_list
 

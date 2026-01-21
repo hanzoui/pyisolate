@@ -55,6 +55,3 @@ class TestValidatePathWithinRoot:
         other.mkdir()
         with pytest.raises(ValueError):
             host.validate_path_within_root(other, root)
-
-
-

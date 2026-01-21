@@ -43,18 +43,13 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
     # -------------------------------------------------------------------------
 
-    logging.basicConfig(
-        format='%(message)s',
-        level=logging.INFO,
-        force=True
-    )
+    logging.basicConfig(format="%(message)s", level=logging.INFO, force=True)
 
     # Get UDS address from environment
     uds_address = os.environ.get("PYISOLATE_UDS_ADDRESS")
     if not uds_address:
         raise RuntimeError(
-            "PYISOLATE_UDS_ADDRESS not set. "
-            "This module should only be invoked via host launcher."
+            "PYISOLATE_UDS_ADDRESS not set. This module should only be invoked via host launcher."
         )
 
     # Connect to host - supports both UDS paths and TCP addresses
@@ -62,6 +57,7 @@ def main() -> None:
     if uds_address.startswith("tcp://"):
         # TCP fallback for Windows without AF_UNIX
         import re
+
         match = re.match(r"tcp://([^:]+):(\d+)", uds_address)
         if not match:
             raise RuntimeError(f"Invalid TCP address format: {uds_address}")
@@ -75,6 +71,7 @@ def main() -> None:
 
     # Create JSON transport (no pickle)
     from .rpc_transports import JSONSocketTransport
+
     transport = JSONSocketTransport(client_sock)
 
     # Receive bootstrap data from host via JSON
@@ -88,6 +85,7 @@ def main() -> None:
 
     # Bootstrap the child environment (apply sys.path, etc.)
     from .bootstrap import bootstrap_child
+
     bootstrap_child()
 
     # Import remaining dependencies after bootstrap
@@ -105,24 +103,24 @@ def main() -> None:
         parts = ext_type_ref.rsplit(".", 1)
         if len(parts) == 2:
             import importlib
+
             module = importlib.import_module(parts[0])
             extension_type = getattr(module, parts[1])
         else:
             extension_type = ExtensionBase
     except Exception as e:
-        logger.warning(
-            "Could not resolve extension type %s: %s",
-            ext_type_ref, e
-        )
+        logger.warning("Could not resolve extension type %s: %s", ext_type_ref, e)
         extension_type = ExtensionBase
 
     # Run the async entrypoint
-    asyncio.run(_async_uds_entrypoint(
-        transport=transport,
-        module_path=module_path,
-        extension_type=extension_type,
-        config=config,
-    ))
+    asyncio.run(
+        _async_uds_entrypoint(
+            transport=transport,
+            module_path=module_path,
+            extension_type=extension_type,
+            config=config,
+        )
+    )
 
 
 async def _async_uds_entrypoint(
@@ -145,11 +143,13 @@ async def _async_uds_entrypoint(
 
     # Register tensor serializer
     from .serialization_registry import SerializerRegistry
+
     register_tensor_serializer(SerializerRegistry.get_instance())
 
     # Ensure file_system strategy for CPU tensors
     import torch
-    torch.multiprocessing.set_sharing_strategy('file_system')
+
+    torch.multiprocessing.set_sharing_strategy("file_system")
 
     # Instantiate extension
     extension = extension_type()
@@ -165,6 +165,7 @@ async def _async_uds_entrypoint(
     context: ContextManager[Any] = nullcontext()
     if config.get("share_torch", False):
         import torch
+
         context = cast(ContextManager[Any], torch.inference_mode())
 
     if not os.path.isdir(module_path):
@@ -173,11 +174,13 @@ async def _async_uds_entrypoint(
     # v1.0: Child adapter was registered during bootstrap_child() -> _rehydrate_adapter()
     # So we can just fetch it from the registry
     from .adapter_registry import AdapterRegistry
+
     adapter: IsolationAdapter | None = AdapterRegistry.get()
 
     # Register serializers in child process
     if adapter:
         from .serialization_registry import SerializerRegistry
+
         adapter.register_serializers(SerializerRegistry.get_instance())
 
     with context:
@@ -192,6 +195,7 @@ async def _async_uds_entrypoint(
             if isinstance(api_item, str):
                 try:
                     import importlib
+
                     parts = api_item.rsplit(".", 1)
                     if len(parts) == 2:
                         mod = importlib.import_module(parts[0])
@@ -212,6 +216,7 @@ async def _async_uds_entrypoint(
 
         # Import and load the extension module
         import importlib.util
+
         sys_module_name = os.path.basename(module_path).replace("-", "_").replace(".", "_")
         module_spec = importlib.util.spec_from_file_location(
             sys_module_name, os.path.join(module_path, "__init__.py")
@@ -232,8 +237,7 @@ async def _async_uds_entrypoint(
             pass
         except Exception as exc:
             logger.error(
-                "Extension module loading/execution failed for %s: %s",
-                module_path, exc, exc_info=True
+                "Extension module loading/execution failed for %s: %s", module_path, exc, exc_info=True
             )
             raise
 

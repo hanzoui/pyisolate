@@ -1,4 +1,3 @@
-
 import pytest
 
 from pyisolate._internal import bootstrap
@@ -6,10 +5,11 @@ from pyisolate._internal import bootstrap
 
 def test_bootstrap_malformed_snapshot_fails(monkeypatch):
     """Test that a malformed JSON snapshot raises ValueError."""
-    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", '{invalid_json')
+    monkeypatch.setenv("PYISOLATE_HOST_SNAPSHOT", "{invalid_json")
 
     with pytest.raises(ValueError, match="Failed to decode PYISOLATE_HOST_SNAPSHOT"):
         bootstrap.bootstrap_child()
+
 
 def test_bootstrap_missing_adapter_ref_fails(monkeypatch):
     """Test that valid JSON without adapter_ref returns None (no adapter loaded)."""
@@ -19,6 +19,7 @@ def test_bootstrap_missing_adapter_ref_fails(monkeypatch):
 
     adapter = bootstrap.bootstrap_child()
     assert adapter is None
+
 
 def test_bootstrap_bad_adapter_ref_fails(monkeypatch):
     """Test that a valid snapshot with a bad adapter_ref logs a warning
@@ -32,4 +33,3 @@ def test_bootstrap_bad_adapter_ref_fails(monkeypatch):
     # We expect a ValueError because adapter_ref was provided but failed to load
     with pytest.raises(ValueError, match="Snapshot contained adapter info but adapter could not be loaded"):
         bootstrap.bootstrap_child()
-

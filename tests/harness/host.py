@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 import pytest
 
@@ -19,6 +19,7 @@ from tests.harness.test_package import ReferenceTestExtension
 
 logger = logging.getLogger(__name__)
 
+
 class TestExtensionProtocol(Protocol):
     async def ping(self) -> str: ...
     async def echo_tensor(self, tensor: Any) -> Any: ...
@@ -26,23 +27,21 @@ class TestExtensionProtocol(Protocol):
     async def write_file(self, path: str, content: str) -> str: ...
     async def read_file(self, path: str) -> str: ...
     async def crash_me(self) -> None: ...
-    async def get_env_var(self, key: str) -> Optional[str]: ...
+    async def get_env_var(self, key: str) -> str | None: ...
 
 
 class ReferenceAdapter:
     """
     Minimal adapter for the reference harness.
     """
+
     @property
     def identifier(self) -> str:
         return "reference_harness"
 
     def get_path_config(self, module_path: str) -> dict[str, Any] | None:
         # Minimal path config
-        return {
-            "preferred_root": os.getcwd(),
-            "additional_paths": []
-        }
+        return {"preferred_root": os.getcwd(), "additional_paths": []}
 
     def setup_child_environment(self, snapshot: dict[str, Any]) -> None:
         pass
@@ -53,12 +52,13 @@ class ReferenceAdapter:
             import torch  # noqa: F401
 
             from pyisolate._internal.tensor_serializer import deserialize_tensor, serialize_tensor
+
             registry.register("torch.Tensor", serialize_tensor, deserialize_tensor)
         except ImportError:
             pass
 
     def provide_rpc_services(self) -> list[type[ProxiedSingleton]]:
-        return [] # TODO: Add singletons when needed
+        return []  # TODO: Add singletons when needed
 
     def handle_api_registration(self, api: ProxiedSingleton, rpc: AsyncRPC) -> None:
         pass
@@ -68,8 +68,9 @@ class ReferenceHost:
     """
     A verbose host harness for running integration tests.
     """
+
     def __init__(self, use_temp_dir: bool = True):
-        self.temp_dir: Optional[tempfile.TemporaryDirectory] = None
+        self.temp_dir: tempfile.TemporaryDirectory | None = None
         self.root_dir: Path = Path(os.getcwd())
         if use_temp_dir:
             self.temp_dir = tempfile.TemporaryDirectory(prefix="pyisolate_harness_")
@@ -107,10 +108,11 @@ class ReferenceHost:
         # Ensure proper torch multiprocessing setup
         try:
             import torch.multiprocessing
-            torch.multiprocessing.set_sharing_strategy('file_system')
+
+            torch.multiprocessing.set_sharing_strategy("file_system")
             # set_start_method might fail if already set, which is fine
             with contextlib.suppress(RuntimeError):
-                torch.multiprocessing.set_start_method('spawn', force=True)
+                torch.multiprocessing.set_start_method("spawn", force=True)
         except ImportError:
             pass
 
@@ -120,7 +122,7 @@ class ReferenceHost:
         isolated: bool = True,
         share_torch: bool = True,
         share_cuda: bool = False,
-        extra_deps: list[str] | None = None
+        extra_deps: list[str] | None = None,
     ) -> Extension[TestExtensionProtocol]:
         """
         Loads the static reference extension.
@@ -136,7 +138,7 @@ class ReferenceHost:
         deps = [f"-e {pyisolate_root}"] + extra_deps
 
         if share_torch:
-            pass # We rely on site-packages inheritance for torch usually
+            pass  # We rely on site-packages inheritance for torch usually
 
         # Sandbox Config for IPC
         sandbox_cfg = {
@@ -158,9 +160,9 @@ class ReferenceHost:
 
         ext = Extension(
             module_path=str(package_path),
-            extension_type=ReferenceTestExtension, # type: ignore
+            extension_type=ReferenceTestExtension,  # type: ignore
             config=ext_config,
-            venv_root_path=str(self.venv_root)
+            venv_root_path=str(self.venv_root),
         )
 
         ext.ensure_process_started()
@@ -185,10 +187,11 @@ class ReferenceHost:
             try:
                 self.temp_dir.cleanup()
             except Exception as e:
-                 cleanup_errors.append(f"temp_dir: {e}")
+                cleanup_errors.append(f"temp_dir: {e}")
 
         if cleanup_errors:
             pass
+
 
 @pytest.fixture
 async def reference_host():

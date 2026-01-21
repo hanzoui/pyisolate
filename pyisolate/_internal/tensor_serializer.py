@@ -11,11 +11,10 @@ import torch.multiprocessing.reductions as reductions
 logger = logging.getLogger(__name__)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Tensor Lifecycle Management
 # ---------------------------------------------------------------------------
+
 
 class TensorKeeper:
     """
@@ -25,8 +24,10 @@ class TensorKeeper:
 
     This fixes the 'RPC recv failed ... No such file or directory' race condition.
     """
-    dest="TensorKeeper",
-    def __init__(self, retention_seconds: float = 30.0): # Increase for slow test env
+
+    dest = ("TensorKeeper",)
+
+    def __init__(self, retention_seconds: float = 30.0):  # Increase for slow test env
         self.retention_seconds = retention_seconds
         self._keeper: collections.deque = collections.deque()
         self._lock = threading.Lock()
@@ -39,7 +40,6 @@ class TensorKeeper:
                 f"TensorKeeper: KEEPING tensor {t.shape} (Total kept: {len(self._keeper)}). id={id(t)}"
             )
 
-
             # Cleanup old
 
             while self._keeper:
@@ -49,7 +49,9 @@ class TensorKeeper:
                 else:
                     break
 
+
 _tensor_keeper = TensorKeeper()
+
 
 def serialize_tensor(t: torch.Tensor) -> dict[str, Any]:
     """Serialize a tensor to JSON-compatible format using shared memory."""
@@ -71,24 +73,24 @@ def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
     storage = t.untyped_storage()
     sfunc, sargs = reductions.reduce_storage(storage)
 
-    if sfunc.__name__ == 'rebuild_storage_filename':
+    if sfunc.__name__ == "rebuild_storage_filename":
         # sargs: (cls, manager_path, storage_key, size)
         return {
             "__type__": "TensorRef",
             "device": "cpu",
             "strategy": "file_system",
-            "manager_path": sargs[1].decode('utf-8'),
-            "storage_key": sargs[2].decode('utf-8'),
+            "manager_path": sargs[1].decode("utf-8"),
+            "storage_key": sargs[2].decode("utf-8"),
             "storage_size": sargs[3],
             "dtype": str(t.dtype),
             "tensor_size": list(t.size()),
             "tensor_stride": list(t.stride()),
             "tensor_offset": t.storage_offset(),
-            "requires_grad": t.requires_grad
+            "requires_grad": t.requires_grad,
         }
-    elif sfunc.__name__ == 'rebuild_storage_fd':
+    elif sfunc.__name__ == "rebuild_storage_fd":
         # Force file_system strategy for JSON-RPC compatibility
-        torch.multiprocessing.set_sharing_strategy('file_system')
+        torch.multiprocessing.set_sharing_strategy("file_system")
         t.share_memory_()
         return _serialize_cpu_tensor(t)
     else:
@@ -106,19 +108,17 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> dict[str, Any]:
             # Clone is required but expensive for large tensors.
             tensor_size_mb = t.numel() * t.element_size() / (1024 * 1024)
             import logging
+
             logger = logging.getLogger(__name__)
 
             if tensor_size_mb > 100:  # 100MB threshold
                 logger.warning(
                     "PERFORMANCE: Cloning large CUDA tensor (%.1fMB) received from another process. "
                     "Consider modifying the node to avoid returning unmodified input tensors.",
-                    tensor_size_mb
+                    tensor_size_mb,
                 )
             else:
-                logger.debug(
-                    "Cloning CUDA tensor (%.2fMB) received from another process",
-                    tensor_size_mb
-                )
+                logger.debug("Cloning CUDA tensor (%.2fMB) received from another process", tensor_size_mb)
 
             t = t.clone()
             func, args = reductions.reduce_tensor(t)
@@ -139,14 +139,14 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> dict[str, Any]:
         "tensor_stride": list(args[2]),
         "tensor_offset": args[3],
         "dtype": str(args[5]),
-        "handle": base64.b64encode(args[7]).decode('ascii'),
+        "handle": base64.b64encode(args[7]).decode("ascii"),
         "storage_size": args[8],
         "storage_offset": args[9],
         "requires_grad": args[10],
-        "ref_counter_handle": base64.b64encode(args[11]).decode('ascii'),
+        "ref_counter_handle": base64.b64encode(args[11]).decode("ascii"),
         "ref_counter_offset": args[12],
-        "event_handle": base64.b64encode(args[13]).decode('ascii') if args[13] else None,
-        "event_sync_required": args[14]
+        "event_handle": base64.b64encode(args[13]).decode("ascii") if args[13] else None,
+        "event_sync_required": args[14],
     }
 
 
@@ -178,8 +178,8 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
         if data.get("strategy") != "file_system":
             raise RuntimeError(f"Unsupported CPU strategy: {data.get('strategy')}")
 
-        manager_path = data["manager_path"].encode('utf-8')
-        storage_key = data["storage_key"].encode('utf-8')
+        manager_path = data["manager_path"].encode("utf-8")
+        storage_key = data["storage_key"].encode("utf-8")
         storage_size = data["storage_size"]
 
         # Rebuild UntypedStorage (no dtype arg)
@@ -188,9 +188,7 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
         )
 
         # Wrap in TypedStorage (required by rebuild_tensor)
-        typed_storage = torch.storage.TypedStorage(
-            wrap_storage=rebuilt_storage, dtype=dtype, _internal=True
-        )
+        typed_storage = torch.storage.TypedStorage(wrap_storage=rebuilt_storage, dtype=dtype, _internal=True)
 
         # Rebuild tensor using new signature: (cls, storage, metadata)
         # metadata is (offset, size, stride, requires_grad)
@@ -198,12 +196,10 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
             data["tensor_offset"],
             tuple(data["tensor_size"]),
             tuple(data["tensor_stride"]),
-            data["requires_grad"]
+            data["requires_grad"],
         )
         cpu_tensor: torch.Tensor = reductions.rebuild_tensor(  # type: ignore[assignment]
-            torch.Tensor,
-            typed_storage,
-            metadata
+            torch.Tensor, typed_storage, metadata
         )
         return cpu_tensor
 
@@ -228,7 +224,7 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
             ref_counter_handle,
             data["ref_counter_offset"],
             event_handle,
-            data["event_sync_required"]
+            data["event_sync_required"],
         )
         return cuda_tensor
 
@@ -250,6 +246,7 @@ def register_tensor_serializer(registry: Any) -> None:
 
     def deserialize_dtype(data: str) -> Any:
         import torch
+
         # Handle "torch.float32" -> torch.float32
         dtype_name = data.split(".")[-1]
         return getattr(torch, dtype_name)
@@ -259,6 +256,7 @@ def register_tensor_serializer(registry: Any) -> None:
 
     def deserialize_device(data: str) -> Any:
         import torch
+
         return torch.device(data)
 
     def serialize_size(obj: Any) -> list:
@@ -266,6 +264,7 @@ def register_tensor_serializer(registry: Any) -> None:
 
     def deserialize_size(data: list) -> Any:
         import torch
+
         return torch.Size(data)
 
     registry.register("dtype", serialize_dtype, deserialize_dtype)

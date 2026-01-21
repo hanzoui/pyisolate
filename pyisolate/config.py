@@ -18,7 +18,7 @@ class ExtensionManagerConfig(TypedDict):
 
 class SandboxConfig(TypedDict, total=False):
     writable_paths: list[str]
-    readonly_paths: list[str] | dict[str, str] # Supports src:dst mapping
+    readonly_paths: list[str] | dict[str, str]  # Supports src:dst mapping
     network: bool
 
 

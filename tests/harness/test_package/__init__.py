@@ -1,12 +1,13 @@
 import logging
 import os
 import sys
-from typing import Any, Optional
+from typing import Any
 
 from pyisolate.shared import ExtensionBase
 
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 # For this reference extension, we will assume we get proxies via method arguments
 # or look them up from a registry if implemented.
 
+
 class ReferenceTestExtension(ExtensionBase):
     """
     A static, verbose extension for testing PyIsolate features.
@@ -27,7 +29,7 @@ class ReferenceTestExtension(ExtensionBase):
     async def initialize(self) -> None:
         logger.info("[TestPkg] Initialized.")
         # We can set a flag in the process to prove initialization happened
-        sys.modules["_test_ext_initialized"] = True # type: ignore
+        sys.modules["_test_ext_initialized"] = True  # type: ignore
 
     async def prepare_shutdown(self) -> None:
         logger.info("[TestPkg] Preparing shutdown.")
@@ -58,13 +60,13 @@ class ReferenceTestExtension(ExtensionBase):
         if not HAS_TORCH or not torch.cuda.is_available():
             raise RuntimeError("CUDA not available in child")
 
-        numel = size_mb * 1024 * 1024 // 4 # float32 = 4 bytes
+        numel = size_mb * 1024 * 1024 // 4  # float32 = 4 bytes
         t = torch.zeros(numel, device="cuda", dtype=torch.float32)
 
         return {
             "device": str(t.device),
             "allocated_bytes": torch.cuda.memory_allocated(),
-            "tensor_shape": list(t.shape)
+            "tensor_shape": list(t.shape),
         }
 
     async def write_file(self, path: str, content: str) -> str:
@@ -89,8 +91,9 @@ class ReferenceTestExtension(ExtensionBase):
         logger.info("[TestPkg] Goodbye cruel world!")
         os._exit(42)
 
-    async def get_env_var(self, key: str) -> Optional[str]:
+    async def get_env_var(self, key: str) -> str | None:
         return os.environ.get(key)
+
 
 # The entrypoint expected by loader
 def extension_entrypoint() -> ExtensionBase:

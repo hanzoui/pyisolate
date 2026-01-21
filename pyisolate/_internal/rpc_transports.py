@@ -118,7 +118,7 @@ class JSONSocketTransport:
         import struct
 
         try:
-            data = json.dumps(obj, default=self._json_default).encode('utf-8')
+            data = json.dumps(obj, default=self._json_default).encode("utf-8")
         except TypeError as e:
             type_name = type(obj).__name__
             logger.error(
@@ -126,11 +126,12 @@ class JSONSocketTransport:
                 "  Type: %s\n"
                 "  Error: %s\n"
                 "  Resolution: Register a custom serializer via SerializerRegistry",
-                type_name, e
+                type_name,
+                e,
             )
             raise TypeError(f"Cannot JSON-serialize {type_name}: {e}") from e
 
-        msg = struct.pack('>I', len(data)) + data
+        msg = struct.pack(">I", len(data)) + data
         with self._lock:
             self._sock.sendall(msg)
 
@@ -143,13 +144,13 @@ class JSONSocketTransport:
             raw_len = self._recvall(4)
             if not raw_len or len(raw_len) < 4:
                 raise ConnectionError("Socket closed or incomplete length header")
-            msg_len = struct.unpack('>I', raw_len)[0]
+            msg_len = struct.unpack(">I", raw_len)[0]
             if msg_len > 100 * 1024 * 1024:  # 100MB sanity limit
                 raise ValueError(f"Message too large: {msg_len} bytes")
             data = self._recvall(msg_len)
             if len(data) < msg_len:
                 raise ConnectionError(f"Incomplete message: got {len(data)}/{msg_len} bytes")
-            return json.loads(data.decode('utf-8'), object_hook=self._json_object_hook)
+            return json.loads(data.decode("utf-8"), object_hook=self._json_object_hook)
 
     def _recvall(self, n: int) -> bytes:
         """Receive exactly n bytes from the socket."""
@@ -161,7 +162,7 @@ class JSONSocketTransport:
                 break
             chunks.append(chunk)
             remaining -= len(chunk)
-        return b''.join(chunks)
+        return b"".join(chunks)
 
     def close(self) -> None:
         """Close the underlying socket."""
@@ -191,59 +192,60 @@ class JSONSocketTransport:
                 pass
 
             return {
-                '__pyisolate_callable__': True,
-                'type': type(obj).__name__,
-                'name': getattr(obj, '__name__', str(obj)),
-                'signature': sig_metadata
+                "__pyisolate_callable__": True,
+                "type": type(obj).__name__,
+                "name": getattr(obj, "__name__", str(obj)),
+                "signature": sig_metadata,
             }
 
         # Handle exceptions explicitly
         if isinstance(obj, BaseException):
             return {
-                '__pyisolate_exception__': True,
-                'type': type(obj).__name__,
-                'module': type(obj).__module__,
-                'args': [str(a) for a in obj.args],  # Convert args to strings for JSON
-                'message': str(obj),
-                'traceback': tb_module.format_exc() if tb_module.format_exc() != 'NoneType: None\n' else ''
+                "__pyisolate_exception__": True,
+                "type": type(obj).__name__,
+                "module": type(obj).__module__,
+                "args": [str(a) for a in obj.args],  # Convert args to strings for JSON
+                "message": str(obj),
+                "traceback": tb_module.format_exc() if tb_module.format_exc() != "NoneType: None\n" else "",
             }
 
         # Handle Enums (must be before __dict__ check since Enums have __dict__)
         if isinstance(obj, Enum):
             return {
-                '__pyisolate_enum__': True,
-                'type': type(obj).__name__,
-                'module': type(obj).__module__,
-                'name': obj.name,
-                'value': obj.value if isinstance(
-                    obj.value, (int, str, float, bool, type(None))
-                ) else str(obj.value)
+                "__pyisolate_enum__": True,
+                "type": type(obj).__name__,
+                "module": type(obj).__module__,
+                "name": obj.name,
+                "value": obj.value
+                if isinstance(obj.value, (int, str, float, bool, type(None)))
+                else str(obj.value),
             }
 
         # Handle bytes (common in some contexts)
         if isinstance(obj, bytes):
             import base64
-            return {
-                '__pyisolate_bytes__': True,
-                'data': base64.b64encode(obj).decode('ascii')
-            }
+
+            return {"__pyisolate_bytes__": True, "data": base64.b64encode(obj).decode("ascii")}
 
         # Handle UUID objects
         import uuid
+
         if isinstance(obj, uuid.UUID):
             return str(obj)
 
         # Handle PyTorch tensors BEFORE __dict__ check (tensors have __dict__ but shouldn't use it)
         try:
             import torch
+
             if isinstance(obj, torch.Tensor):
                 from .tensor_serializer import serialize_tensor
+
                 return serialize_tensor(obj)
         except ImportError:
             pass
 
         # Handle objects with __dict__ (preserve full state)
-        if hasattr(obj, '__dict__') and not callable(obj):
+        if hasattr(obj, "__dict__") and not callable(obj):
             try:
                 # Recursively serialize __dict__ contents AND class attributes
                 serialized_dict = {}
@@ -253,7 +255,7 @@ class JSONSocketTransport:
                     if klass is object:
                         continue
                     for k, v in vars(klass).items():
-                        if k.startswith('_'):
+                        if k.startswith("_"):
                             continue
                         # Only include primitive types as class attributes
                         if isinstance(v, (int, float, str, bool, type(None))) and k not in serialized_dict:
@@ -262,13 +264,14 @@ class JSONSocketTransport:
                 # Then add instance attributes (which override class attrs)
                 for k, v in obj.__dict__.items():
                     # Skip private attributes and methods/callables
-                    if k.startswith('_'):
+                    if k.startswith("_"):
                         continue
                     if callable(v):
                         continue
                     try:
                         # Test if value is JSON-serializable
                         import json
+
                         json.dumps(v)
                         serialized_dict[k] = v
                     except TypeError:
@@ -276,29 +279,30 @@ class JSONSocketTransport:
                         serialized_dict[k] = self._json_default(v)
 
                 return {
-                    '__pyisolate_object__': True,
-                    'type': type(obj).__name__,
-                    'module': type(obj).__module__,
-                    'data': serialized_dict
+                    "__pyisolate_object__": True,
+                    "type": type(obj).__name__,
+                    "module": type(obj).__module__,
+                    "data": serialized_dict,
                 }
             except Exception as e:
-                logger.warning("Failed to serialize __dict__ of %s: %s",
-                             type(obj).__name__, e)
+                logger.warning("Failed to serialize __dict__ of %s: %s", type(obj).__name__, e)
 
         # Fail loudly for non-serializable types
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable. "
-                       f"Register a serializer via SerializerRegistry.register()")
+        raise TypeError(
+            f"Object of type {type(obj).__name__} is not JSON serializable. "
+            f"Register a serializer via SerializerRegistry.register()"
+        )
 
     def _json_object_hook(self, dct: dict) -> Any:
         """Reconstruct objects from JSON during deserialization."""
         from types import SimpleNamespace
 
         # Reconstruct exceptions
-        if dct.get('__pyisolate_exception__'):
-            exc_type = dct.get('type', 'Exception')
-            exc_module = dct.get('module', 'builtins')
-            msg = dct.get('message', '')
-            remote_tb = dct.get('traceback', '')
+        if dct.get("__pyisolate_exception__"):
+            exc_type = dct.get("type", "Exception")
+            exc_module = dct.get("module", "builtins")
+            msg = dct.get("message", "")
+            remote_tb = dct.get("traceback", "")
             # Create a RuntimeError that preserves the original error info
             error = RuntimeError(f"Remote {exc_module}.{exc_type}: {msg}")
             if remote_tb:
@@ -306,16 +310,18 @@ class JSONSocketTransport:
             return error
 
         # Reconstruct bytes
-        if dct.get('__pyisolate_bytes__'):
+        if dct.get("__pyisolate_bytes__"):
             import base64
-            return base64.b64decode(dct['data'])
+
+            return base64.b64decode(dct["data"])
 
         # Generic Registry Lookup for __type__
-        if '__type__' in dct:
-            type_name = dct['__type__']
+        if "__type__" in dct:
+            type_name = dct["__type__"]
             # Skip TensorRef here as it has special handling below (or generic can handle it if registered)
-            if type_name != 'TensorRef':
+            if type_name != "TensorRef":
                 from .serialization_registry import SerializerRegistry
+
                 registry = SerializerRegistry.get_instance()
                 deserializer = registry.get_deserializer(type_name)
                 if deserializer:
@@ -326,27 +332,30 @@ class JSONSocketTransport:
                         logger.warning(f"Failed to deserialize {type_name}: {e}")
 
         # Handle TensorRef - deserialize tensors during JSON parsing
-        if dct.get('__type__') == 'TensorRef':
+        if dct.get("__type__") == "TensorRef":
             from .serialization_registry import SerializerRegistry
+
             registry = SerializerRegistry.get_instance()
-            if registry.has_handler('TensorRef'):
-                deserializer = registry.get_deserializer('TensorRef')
+            if registry.has_handler("TensorRef"):
+                deserializer = registry.get_deserializer("TensorRef")
                 if deserializer:
                     return deserializer(dct)
             # Fallback: direct import if registry not yet populated
             try:
                 from .tensor_serializer import deserialize_tensor
+
                 return deserialize_tensor(dct)
             except Exception:
                 pass
             return dct  # Last resort fallback
 
         # Reconstruct Enums
-        if dct.get('__pyisolate_enum__'):
+        if dct.get("__pyisolate_enum__"):
             import importlib
-            module_name = dct.get('module', 'builtins')
-            type_name = dct.get('type', 'Enum')
-            enum_name = dct.get('name', '')
+
+            module_name = dct.get("module", "builtins")
+            type_name = dct.get("type", "Enum")
+            enum_name = dct.get("name", "")
             try:
                 module = importlib.import_module(module_name)
                 enum_type = getattr(module, type_name, None)
@@ -355,14 +364,15 @@ class JSONSocketTransport:
             except Exception:
                 pass
             # Fallback: return the raw value if we can't reconstruct the enum
-            return dct.get('value')
+            return dct.get("value")
 
         # Reconstruct generic objects - try to recreate the original class
-        if dct.get('__pyisolate_object__'):
+        if dct.get("__pyisolate_object__"):
             import importlib
-            data = dct.get('data', {})
-            module_name = dct.get('module')
-            type_name = dct.get('type')
+
+            data = dct.get("data", {})
+            module_name = dct.get("module")
+            type_name = dct.get("type")
 
             # Try to reconstruct the original class
             if module_name and type_name:
@@ -372,9 +382,9 @@ class JSONSocketTransport:
                     if cls is not None:
                         # Try to create instance - some classes have special constructors
                         # First, try if it takes a 'cond' arg (common for CONDRegular etc.)
-                        if 'cond' in data:
+                        if "cond" in data:
                             try:
-                                return cls(data['cond'])
+                                return cls(data["cond"])
                             except Exception:
                                 pass
                         # Try no-arg constructor (calls __init__)
@@ -384,7 +394,7 @@ class JSONSocketTransport:
                                 # Check if it's a property without a setter
                                 prop = getattr(type(obj), k, None)
                                 if isinstance(prop, property) and prop.fset is None:
-                                   continue
+                                    continue
                                 setattr(obj, k, v)
                             return obj
                         except Exception:
@@ -407,8 +417,9 @@ class JSONSocketTransport:
             return ns
 
         # Reconstruct Callables
-        if dct.get('__pyisolate_callable__'):
+        if dct.get("__pyisolate_callable__"):
             from .rpc_serialization import CallableProxy
+
             return CallableProxy(dct)
 
         return dct
