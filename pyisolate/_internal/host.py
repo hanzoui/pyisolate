@@ -11,7 +11,7 @@ from logging.handlers import QueueListener
 from pathlib import Path
 from typing import Any, Generic, TypeVar, cast
 
-from ..config import ExtensionConfig
+from ..config import ExtensionConfig, SandboxMode
 from ..shared import ExtensionBase
 from .environment import (
     build_extension_snapshot,
@@ -321,67 +321,88 @@ class Extension(Generic[T]):
         # Prepare environment
         env = os.environ.copy()
 
+        # Get sandbox mode (default: REQUIRED)
+        sandbox_mode = self.config.get("sandbox_mode", SandboxMode.REQUIRED)
+        # Handle string values from config files
+        if isinstance(sandbox_mode, str):
+            sandbox_mode = SandboxMode(sandbox_mode)
+
         # Check platform for sandbox requirement
+        use_sandbox = False
         if sys.platform == "linux":
-            # 1. Mandatory Check: Fail Loud if bwrap missing on Linux
             cap = detect_sandbox_capability()
-            if not cap.available:
+
+            if sandbox_mode == SandboxMode.DISABLED:
+                # User explicitly disabled sandbox - emit LOUD warning
+                logger.warning("=" * 78)
+                logger.warning("SECURITY WARNING: Sandbox DISABLED for extension '%s'", self.name)
+                logger.warning(
+                    "The isolated process will have FULL ACCESS to your filesystem, "
+                    "network, and GPU memory. This is STRONGLY DISCOURAGED for any "
+                    "code you did not write yourself."
+                )
+                logger.warning(
+                    "To enable sandbox protection, remove 'sandbox_mode: disabled' "
+                    "from your extension config."
+                )
+                logger.warning("=" * 78)
+                use_sandbox = False
+            elif not cap.available:
+                # REQUIRED mode (default) but bwrap unavailable - fail loud
                 raise RuntimeError(
                     f"Process isolation on Linux REQUIRES bubblewrap.\n"
                     f"Error: {cap.remediation}\n"
-                    f"Details: {cap.restriction_model} - {cap.raw_error}"
+                    f"Details: {cap.restriction_model} - {cap.raw_error}\n\n"
+                    f"If you understand the security risks and want to proceed without "
+                    f"sandbox protection, set sandbox_mode='disabled' in your extension config."
                 )
+            else:
+                use_sandbox = True
 
             # Apply env overrides BEFORE building cmd or bwrap env
             if "env" in self.config:
                 env.update(self.config["env"])
 
-            # 2. Build Bwrap Command
-            # We need to construct the SandboxConfig from self.config if present
-            sandbox_config = self.config.get("sandbox", {})
-            if isinstance(sandbox_config, bool):
-                sandbox_config = {}
+            if use_sandbox:
+                # Build Bwrap Command
+                sandbox_config = self.config.get("sandbox", {})
+                if isinstance(sandbox_config, bool):
+                    sandbox_config = {}
 
-            # Detect host site-packages to allow access to Torch/Comfy dependencies
-            # We must bind the site-packages of the HOST python (or at least where torch is)
-            # because the isolated venv is often a thin venv sharing deps or expecting them.
-            import site
+                # Detect host site-packages to allow access to Torch/Comfy dependencies
+                import site
 
-            extra_binds = []
+                extra_binds = []
 
-            # Add standard site-packages
-            site_packages = site.getsitepackages()
-            for sp in site_packages:
-                if os.path.exists(sp):
-                    extra_binds.append(sp)
+                # Add standard site-packages
+                site_packages = site.getsitepackages()
+                for sp in site_packages:
+                    if os.path.exists(sp):
+                        extra_binds.append(sp)
 
-            # Also add user site-packages just in case
-            user_site = site.getusersitepackages()
-            if isinstance(user_site, str) and os.path.exists(user_site):
-                extra_binds.append(user_site)
+                # Also add user site-packages just in case
+                user_site = site.getusersitepackages()
+                if isinstance(user_site, str) and os.path.exists(user_site):
+                    extra_binds.append(user_site)
 
-            cmd = build_bwrap_command(
-                python_exe=python_exe,
-                module_path=self.module_path,
-                venv_path=str(self.venv_path),
-                uds_address=ipc_address,
-                sandbox_config=cast(dict[str, Any], sandbox_config),
-                allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
-                restriction_model=cap.restriction_model,
-                env_overrides=self.config.get("env"),
-            )
-
-            # INSTRUMENTATION: LOG THE EXACT COMMAND
-            # logger.error("!" * 80)
-            # logger.error(f"[BWRAP-DEBUG] Launching CMD: {' '.join(cmd)}")
-            # logger.error("!" * 80)
-
-            # bwrap uses --setenv to pass variables, so the `env` arg to Popen
-
-            # bwrap uses --setenv to pass variables, so the `env` arg to Popen
-            # only affects the bwrap process itself (path lookup, etc), not the child.
-            # We must NOT pass these vars in `env` because they are already in `cmd`.
-            # However, keeping them in `env` is harmless and ensures bwrap has a sane env.
+                cmd = build_bwrap_command(
+                    python_exe=python_exe,
+                    module_path=self.module_path,
+                    venv_path=str(self.venv_path),
+                    uds_address=ipc_address,
+                    sandbox_config=cast(dict[str, Any], sandbox_config),
+                    allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
+                    restriction_model=cap.restriction_model,
+                    env_overrides=self.config.get("env"),
+                )
+            else:
+                # Linux without sandbox (DISABLED mode)
+                cmd = [python_exe, "-m", "pyisolate._internal.uds_client"]
+                env["PYISOLATE_UDS_ADDRESS"] = ipc_address
+                env["PYISOLATE_CHILD"] = "1"
+                env["PYISOLATE_EXTENSION"] = self.name
+                env["PYISOLATE_MODULE_PATH"] = self.module_path
+                env["PYISOLATE_ENABLE_CUDA_IPC"] = "1" if self._cuda_ipc_enabled else "0"
 
         else:
             # Non-Linux (Windows/Mac) - Fallback to direct launch

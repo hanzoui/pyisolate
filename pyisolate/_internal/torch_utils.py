@@ -17,7 +17,7 @@ def get_torch_ecosystem_packages() -> frozenset[str]:
     packages: set[str] = set(_CORE_TORCH_PACKAGES)
     try:
         for dist in importlib_metadata.distributions():
-            name = dist.metadata.get("Name", "").lower()
+            name = dist.metadata["Name"].lower() if "Name" in dist.metadata else ""
             if name.startswith(("nvidia-", "torch", "triton")):
                 packages.add(name)
     except Exception:  # noqa: S110 - intentional silent fallback for metadata enumeration

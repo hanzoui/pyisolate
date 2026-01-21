@@ -133,6 +133,7 @@ jobs:
         ruff check pyisolate tests
         ruff format --check pyisolate tests
 
-    # - name: Run mypy
-      # run: |
-        # mypy pyisolate
+    - name: Run mypy
+      run: |
+        source .venv/bin/activate
+        mypy pyisolate

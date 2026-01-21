@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from ._internal.rpc_protocol import ProxiedSingleton
+
+
+class SandboxMode(Enum):
+    """Sandbox enforcement mode for Linux process isolation.
+
+    REQUIRED: (Default) Fail loudly if bubblewrap is unavailable. This is the
+              only safe option for running untrusted code.
+    DISABLED: Skip sandbox entirely. USE AT YOUR OWN RISK. This exposes your
+              filesystem, network, and GPU memory to untrusted extensions.
+    """
+
+    REQUIRED = "required"
+    DISABLED = "disabled"
 
 
 class ExtensionManagerConfig(TypedDict):
@@ -48,6 +62,10 @@ class ExtensionConfig(TypedDict):
 
     sandbox: dict[str, Any]
     """Configuration for the sandbox (e.g. writable_paths, network access)."""
+
+    sandbox_mode: SandboxMode
+    """Sandbox enforcement mode. Default is REQUIRED (fail if bwrap unavailable).
+    Set to DISABLED only if you fully trust all code and accept the security risk."""
 
     env: dict[str, str]
     """Environment variable overrides for the child process."""
