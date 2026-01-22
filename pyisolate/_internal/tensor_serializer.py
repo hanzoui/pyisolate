@@ -1,14 +1,80 @@
 import base64
 import collections
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import torch
 import torch.multiprocessing.reductions as reductions
 
 logger = logging.getLogger(__name__)
+
+# Minimum /dev/shm space required for tensor serialization (100MB)
+MIN_SHM_SPACE_BYTES = 100 * 1024 * 1024
+
+# Cache for /dev/shm availability check
+_shm_available: bool | None = None
+_shm_check_lock = threading.Lock()
+
+
+def _check_shm_availability() -> bool:
+    """Check if /dev/shm is available and has sufficient space.
+
+    Returns:
+        True if /dev/shm is usable, False otherwise.
+    """
+    global _shm_available
+
+    with _shm_check_lock:
+        if _shm_available is not None:
+            return _shm_available
+
+        shm_path = Path("/dev/shm")
+
+        # Check if /dev/shm exists
+        if not shm_path.exists():
+            logger.warning(
+                "/dev/shm not found. Tensor serialization may use slower file-based "
+                "fallback. Consider mounting tmpfs at /dev/shm for better performance."
+            )
+            _shm_available = False
+            return False
+
+        # Check if we can write to it
+        if not os.access(shm_path, os.W_OK):
+            logger.warning(
+                "/dev/shm is not writable. Tensor serialization may use slower "
+                "fallback. Check permissions on /dev/shm."
+            )
+            _shm_available = False
+            return False
+
+        # Check available space
+        try:
+            stat = os.statvfs(shm_path)
+            available_bytes = stat.f_bavail * stat.f_frsize
+            if available_bytes < MIN_SHM_SPACE_BYTES:
+                logger.warning(
+                    "/dev/shm has low available space (%.1f MB). Large tensor "
+                    "serialization may fail. Consider increasing /dev/shm size.",
+                    available_bytes / (1024 * 1024),
+                )
+                # Still usable, just warn
+        except OSError as e:
+            logger.debug("Failed to check /dev/shm space: %s", e)
+
+        _shm_available = True
+        return True
+
+
+def _reset_shm_check() -> None:
+    """Reset the cached /dev/shm check (for testing)."""
+    global _shm_available
+    with _shm_check_lock:
+        _shm_available = None
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +127,28 @@ def serialize_tensor(t: torch.Tensor) -> dict[str, Any]:
 
 
 def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
-    """Serialize CPU tensor using file_system shared memory strategy."""
+    """Serialize CPU tensor using file_system shared memory strategy.
+
+    Falls back gracefully if /dev/shm is unavailable, though performance
+    may be reduced.
+    """
+    # Check /dev/shm availability (cached after first check)
+    _check_shm_availability()
+
+    # Warn for large tensors that may impact performance
+    tensor_size_mb = t.numel() * t.element_size() / (1024 * 1024)
+    if tensor_size_mb > 500:  # 500MB threshold
+        logger.warning(
+            "PERFORMANCE: Serializing large CPU tensor (%.1f MB). Consider using "
+            "CUDA tensors with PYISOLATE_ENABLE_CUDA_IPC=1 for zero-copy transfer.",
+            tensor_size_mb,
+        )
+    elif tensor_size_mb > 100:
+        logger.debug(
+            "Serializing medium-sized CPU tensor (%.1f MB) via shared memory.",
+            tensor_size_mb,
+        )
+
     # Ensure the tensor is kept alive on this side until the remote side can open it.
     # Without this, the tensor might be garbage collected immediately after serialization returns,
     # causing the underlying shared memory file to be deleted before the receiver opens it.

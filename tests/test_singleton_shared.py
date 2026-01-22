@@ -12,11 +12,14 @@ from pyisolate._internal.rpc_protocol import (
 
 @pytest.fixture(autouse=True)
 def reset_singleton_state():
-    """Ensure singleton/global registries are clean for every test."""
-    SingletonMetaclass._instances.clear()
+    """Ensure singleton/global registries are clean for every test.
+
+    Note: This fixture explicitly resets LocalMethodRegistry in addition to
+    the global clean_singletons fixture because these tests specifically
+    verify local method registration behavior.
+    """
     LocalMethodRegistry._instance = None
     yield
-    SingletonMetaclass._instances.clear()
     LocalMethodRegistry._instance = None
 
 

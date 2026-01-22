@@ -182,6 +182,22 @@ class RPCResponse(TypedDict):
     error: str | None
 
 
+class RPCError(TypedDict):
+    """Error response when RPC call fails with exception."""
+
+    kind: Literal["error"]
+    call_id: int
+    error: str
+    traceback: str | None
+
+
+class RPCStop(TypedDict):
+    """Stop signal to terminate RPC connection."""
+
+    kind: Literal["stop"]
+    reason: str | None
+
+
 class RPCPendingRequest(TypedDict):
     kind: Literal["call", "callback"]
     object_id: str
@@ -193,7 +209,7 @@ class RPCPendingRequest(TypedDict):
     kwargs: dict[str, Any]
 
 
-RPCMessage = RPCRequest | RPCCallback | RPCResponse
+RPCMessage = RPCRequest | RPCCallback | RPCResponse | RPCError | RPCStop
 
 
 # ---------------------------------------------------------------------------

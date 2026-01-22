@@ -15,21 +15,13 @@ import asyncio
 
 import pytest
 
-from pyisolate._internal.rpc_protocol import ProxiedSingleton, SingletonMetaclass
+from pyisolate._internal.rpc_protocol import ProxiedSingleton
 
 from .fixtures.test_adapter import MockRegistry
 
 
 class TestProxiedSingletonContract:
     """Tests for ProxiedSingleton metaclass behavior."""
-
-    def setup_method(self):
-        """Clear singleton instances before each test."""
-        SingletonMetaclass._instances.clear()
-
-    def teardown_method(self):
-        """Clear singleton instances after each test."""
-        SingletonMetaclass._instances.clear()
 
     def test_singleton_returns_same_instance(self):
         """Multiple instantiations return the same instance."""
@@ -65,14 +57,6 @@ class TestProxiedSingletonContract:
 
 class TestRpcMethodContract:
     """Tests for RPC method call contract."""
-
-    def setup_method(self):
-        """Clear singleton instances before each test."""
-        SingletonMetaclass._instances.clear()
-
-    def teardown_method(self):
-        """Clear singleton instances after each test."""
-        SingletonMetaclass._instances.clear()
 
     def test_method_returns_value(self):
         """RPC method must return expected value."""
@@ -123,14 +107,6 @@ class TestEventLoopResilience:
     recreated (e.g., between workflow executions).
     """
 
-    def setup_method(self):
-        """Clear singleton instances before each test."""
-        SingletonMetaclass._instances.clear()
-
-    def teardown_method(self):
-        """Clear singleton instances after each test."""
-        SingletonMetaclass._instances.clear()
-
     def test_singleton_survives_loop_recreation(self):
         """Singleton instance survives event loop recreation."""
         # Create initial loop
@@ -180,14 +156,6 @@ class TestEventLoopResilience:
 
 class TestRpcErrorHandling:
     """Tests for RPC error handling contract."""
-
-    def setup_method(self):
-        """Clear singleton instances before each test."""
-        SingletonMetaclass._instances.clear()
-
-    def teardown_method(self):
-        """Clear singleton instances after each test."""
-        SingletonMetaclass._instances.clear()
 
     def test_method_exception_propagates(self):
         """Exceptions in RPC methods should propagate."""

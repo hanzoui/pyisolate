@@ -7,7 +7,6 @@ import pytest
 
 from pyisolate._internal.rpc_protocol import (
     AsyncRPC,
-    LocalMethodRegistry,
     ProxiedSingleton,
     SingletonMetaclass,
 )
@@ -136,6 +135,4 @@ def test_proxied_singleton_registers_nested(monkeypatch):
     rpc = SimpleNamespace(register_callee=MagicMock())
     Parent()._register(rpc)  # instance register should register child but not self twice
     assert rpc.register_callee.call_count == 2
-
-    LocalMethodRegistry._instance = None
-    SingletonMetaclass._instances.clear()
+    # Note: Singleton cleanup handled by conftest autouse fixture

@@ -27,7 +27,18 @@ extensions = [
     "sphinx.ext.githubpages",
     "sphinx.ext.napoleon",  # Support for Google/NumPy style docstrings
     "sphinx.ext.intersphinx",  # Link to other project's documentation
+    "myst_parser",  # Markdown support
 ]
+
+# MyST parser configuration
+myst_enable_extensions = [
+    "colon_fence",
+    "deflist",
+]
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]

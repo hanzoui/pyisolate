@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from pyisolate._internal.singleton_context import singleton_scope
+
 # Add ComfyUI to sys.path BEFORE any tests run
 # This is required because pyisolate is now ComfyUI-integrated
 COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
@@ -20,6 +22,22 @@ if COMFYUI_ROOT not in sys.path:
 
 # Set environment variable so child processes know ComfyUI location
 os.environ.setdefault("COMFYUI_ROOT", COMFYUI_ROOT)
+
+
+@pytest.fixture(autouse=True)
+def clean_singletons():
+    """Auto-cleanup fixture for singleton isolation between tests.
+
+    This fixture runs automatically for all tests and ensures that:
+    - Each test starts with a clean singleton state
+    - Singletons created during a test are cleaned up afterward
+    - Previous singleton state is restored after each test
+
+    This eliminates the need for manual SingletonMetaclass._instances.clear()
+    calls in individual tests.
+    """
+    with singleton_scope():
+        yield
 
 
 @pytest.fixture
@@ -49,6 +67,9 @@ def patch_extension_launch(monkeypatch):
 
 def pytest_configure(config):
     """Configure pytest with custom settings."""
+    # Register custom markers
+    config.addinivalue_line("markers", "slow: marks tests as slow (>5s, deselect with -m 'not slow')")
+
     # Set up logging
     log_level = logging.DEBUG if config.getoption("--debug-pyisolate") else logging.INFO
 

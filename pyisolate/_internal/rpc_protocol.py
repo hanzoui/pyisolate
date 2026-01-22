@@ -70,6 +70,8 @@ def get_child_rpc_instance() -> AsyncRPC | None:
 
 def local_execution(func: Callable[..., Any]) -> Callable[..., Any]:
     """Mark a ProxiedSingleton method for local execution instead of RPC."""
+    # Dynamic attribute on function is standard decorator pattern.
+    # Creating a wrapper class would add unnecessary complexity for this simple marker.
     func._is_local_execution = True  # type: ignore[attr-defined]
     return func
 
@@ -94,6 +96,8 @@ class LocalMethodRegistry:
         # Use object.__new__ to bypass singleton __init__ and prevent infinite recursion.
         # Standard instantiation would trigger __init__, which registers the singleton,
         # which would call register_class again, creating an infinite loop.
+        # Manually calling __init__ on raw instance is required to bypass
+        # SingletonMetaclass.__call__ and prevent infinite recursion.
         local_instance: Any = object.__new__(cls)
         cls.__init__(local_instance)  # type: ignore[misc]
         self._local_implementations[cls] = local_instance
@@ -133,8 +137,10 @@ class AsyncRPC:
 
     def __init__(
         self,
-        recv_queue: typehint_mp.Queue[RPCMessage] | None = None,  # type: ignore
-        send_queue: typehint_mp.Queue[RPCMessage] | None = None,  # type: ignore
+        # multiprocessing.Queue is not generic at runtime, but we use
+        # TYPE_CHECKING import to provide type hints without runtime import.
+        recv_queue: typehint_mp.Queue[RPCMessage] | None = None,  # type: ignore[type-arg]
+        send_queue: typehint_mp.Queue[RPCMessage] | None = None,  # type: ignore[type-arg]
         *,
         transport: RPCTransport | None = None,
     ):
@@ -648,6 +654,8 @@ class SingletonMetaclass(type):
 
     def get_instance(cls: type[T], *args: Any, **kwargs: Any) -> T:
         if cls not in SingletonMetaclass._instances:
+            # super().__call__ on metaclass returns instance of cls, but mypy can't
+            # infer this through the metaclass indirection.
             SingletonMetaclass._instances[cls] = super().__call__(*args, **kwargs)  # type: ignore[misc]
         return cast(T, SingletonMetaclass._instances[cls])
 

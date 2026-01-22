@@ -1,9 +1,20 @@
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .sandbox_detect import RestrictionModel
+
+if TYPE_CHECKING:
+    from ..interfaces import IsolationAdapter
+
+logger = logging.getLogger(__name__)
+
+# Paths that would significantly weaken sandbox security if exposed
+FORBIDDEN_ADAPTER_PATHS: frozenset[str] = frozenset(
+    {"/", "/etc", "/root", "/home", "/var", "/run", "/proc", "/sys"}
+)
 
 # ---------------------------------------------------------------------------
 # Sandbox System Path Allow-List (DENY-BY-DEFAULT)
@@ -44,6 +55,30 @@ GPU_PASSTHROUGH_PATTERNS: list[str] = [
 ]
 
 
+def _validate_adapter_path(path: str) -> bool:
+    """Validate that an adapter-provided path doesn't weaken sandbox security.
+
+    Args:
+        path: Path to validate
+
+    Returns:
+        True if path is safe to add, False if it would weaken sandbox
+    """
+    # Normalize the path
+    normalized = os.path.normpath(path)
+
+    # Check against forbidden paths
+    if normalized in FORBIDDEN_ADAPTER_PATHS:
+        return False
+
+    # Check if path is a parent of forbidden paths (e.g., "/" is parent of all)
+    for forbidden in FORBIDDEN_ADAPTER_PATHS:
+        if forbidden.startswith(normalized + "/") or normalized == forbidden:
+            return False
+
+    return True
+
+
 def build_bwrap_command(
     python_exe: str,
     module_path: str,
@@ -53,6 +88,7 @@ def build_bwrap_command(
     sandbox_config: dict[str, Any] | None = None,
     restriction_model: RestrictionModel = RestrictionModel.NONE,
     env_overrides: dict[str, str] | None = None,
+    adapter: "IsolationAdapter | None" = None,
 ) -> list[str]:
     """Build the bubblewrap command for launching a sandboxed process.
 
@@ -72,6 +108,8 @@ def build_bwrap_command(
         sandbox_config: SandboxConfig dict with network, writable_paths, readonly_paths
         allow_gpu: Whether to enable GPU passthrough
         restriction_model: Detected system restriction model
+        env_overrides: Additional environment variables to set
+        adapter: Optional IsolationAdapter for extending sandbox paths
 
     Returns:
         Command list suitable for subprocess.Popen
@@ -110,7 +148,20 @@ def build_bwrap_command(
     cmd.extend(["--tmpfs", "/tmp"])
 
     # DENY-BY-DEFAULT: Only bind required system paths (read-only)
-    for sys_path in SANDBOX_SYSTEM_PATHS:
+    # Start with default paths
+    system_paths = list(SANDBOX_SYSTEM_PATHS)
+
+    # Query adapter for additional paths (safe access for structural typing)
+    get_adapter_paths = getattr(adapter, "get_sandbox_system_paths", lambda: None)
+    adapter_paths = get_adapter_paths()
+    if adapter_paths:
+        for path in adapter_paths:
+            if _validate_adapter_path(path):
+                system_paths.append(path)
+            else:
+                logger.warning("Adapter path '%s' rejected: would weaken sandbox security", path)
+
+    for sys_path in system_paths:
         if os.path.exists(sys_path):
             cmd.extend(["--ro-bind", sys_path, sys_path])
 
@@ -124,7 +175,17 @@ def build_bwrap_command(
     if allow_gpu:
         cmd.extend(["--ro-bind", "/sys", "/sys"])
         dev_path = Path("/dev")
-        for pattern in GPU_PASSTHROUGH_PATTERNS:
+
+        # Start with default GPU patterns
+        gpu_patterns = list(GPU_PASSTHROUGH_PATTERNS)
+
+        # Query adapter for additional GPU patterns (safe access)
+        get_gpu_patterns = getattr(adapter, "get_sandbox_gpu_patterns", lambda: None)
+        adapter_gpu_patterns = get_gpu_patterns()
+        if adapter_gpu_patterns:
+            gpu_patterns.extend(adapter_gpu_patterns)
+
+        for pattern in gpu_patterns:
             for dev in dev_path.glob(pattern):
                 if dev.exists():
                     cmd.extend(["--dev-bind", str(dev), str(dev)])

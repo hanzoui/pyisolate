@@ -6,10 +6,7 @@ errors propagate correctly across process boundaries.
 
 import pytest
 
-from pyisolate._internal.rpc_protocol import (
-    ProxiedSingleton,
-    SingletonMetaclass,
-)
+from pyisolate._internal.rpc_protocol import ProxiedSingleton
 from pyisolate._internal.rpc_serialization import (
     AttrDict,
     AttributeContainer,
@@ -163,14 +160,6 @@ class TestAttributeContainerBehavior:
 
 class TestSingletonMetaclass:
     """Tests for SingletonMetaclass behavior."""
-
-    def setup_method(self):
-        """Clear singleton instances before each test."""
-        SingletonMetaclass._instances.clear()
-
-    def teardown_method(self):
-        """Clear singleton instances after each test."""
-        SingletonMetaclass._instances.clear()
 
     def test_singleton_same_instance(self):
         """Multiple instantiations return same instance."""

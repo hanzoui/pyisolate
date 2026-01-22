@@ -62,3 +62,26 @@ class IsolationAdapter(Protocol):
 
     def handle_api_registration(self, api: ProxiedSingleton, rpc: AsyncRPC) -> None:
         """Optional post-registration hook for API-specific setup."""
+
+    def get_sandbox_system_paths(self) -> list[str] | None:
+        """Return additional system paths for sandbox.
+
+        Returns:
+            List of additional system paths to expose in sandbox (read-only),
+            or None to use only the default paths.
+
+        Security Note:
+            Adapter-provided paths can weaken sandbox if misconfigured.
+            Paths like "/", "/etc", "/root", "/home" are blocked by pyisolate.
+            Recommended: use principle of least privilege.
+        """
+        ...
+
+    def get_sandbox_gpu_patterns(self) -> list[str] | None:
+        """Return GPU passthrough patterns for sandbox.
+
+        Returns:
+            List of glob patterns for GPU device passthrough (e.g., "nvidia*"),
+            or None to use default patterns.
+        """
+        ...

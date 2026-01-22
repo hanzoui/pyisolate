@@ -35,6 +35,7 @@ Basic Usage:
 from typing import TYPE_CHECKING
 
 from ._internal.rpc_protocol import ProxiedSingleton, local_execution
+from ._internal.singleton_context import singleton_scope
 from .config import ExtensionConfig, ExtensionManagerConfig, SandboxMode
 from .host import ExtensionBase, ExtensionManager
 
@@ -51,6 +52,7 @@ __all__ = [
     "SandboxMode",
     "ProxiedSingleton",
     "local_execution",
+    "singleton_scope",
     "register_adapter",
     "get_adapter",
 ]
