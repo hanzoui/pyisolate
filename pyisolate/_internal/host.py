@@ -26,6 +26,7 @@ from .rpc_transports import JSONSocketTransport
 from .sandbox import build_bwrap_command
 from .sandbox_detect import detect_sandbox_capability
 from .tensor_serializer import register_tensor_serializer
+from .torch_gate import get_torch_optional
 from .torch_utils import probe_cuda_ipc_support
 
 __all__ = [
@@ -118,8 +119,11 @@ class Extension(Generic[T]):
 
         self.mp: Any
         if self.config["share_torch"]:
-            import torch.multiprocessing
-
+            torch, _ = get_torch_optional()
+            if torch is None:
+                raise RuntimeError(
+                    "share_torch=True requires PyTorch. Install 'torch' to use tensor-sharing features."
+                )
             self.mp = torch.multiprocessing
         else:
             import multiprocessing
@@ -189,15 +193,18 @@ class Extension(Generic[T]):
         self.log_listener = QueueListener(self.log_queue, stream_handler)
         self.log_listener.start()
 
-        # Register tensor serializer for JSON-RPC
-        from .serialization_registry import SerializerRegistry
+        torch, _ = get_torch_optional()
+        if torch is not None:
+            # Register tensor serializer for JSON-RPC only when torch is available.
+            from .serialization_registry import SerializerRegistry
 
-        register_tensor_serializer(SerializerRegistry.get_instance())
-
-        # Ensure file_system strategy for CPU tensors
-        import torch
-
-        torch.multiprocessing.set_sharing_strategy("file_system")
+            register_tensor_serializer(SerializerRegistry.get_instance())
+            # Ensure file_system strategy for CPU tensors.
+            torch.multiprocessing.set_sharing_strategy("file_system")
+        elif self.config.get("share_torch", False):
+            raise RuntimeError(
+                "share_torch=True requires PyTorch. Install 'torch' to use tensor-sharing features."
+            )
 
         self.proc = self.__launch()
 

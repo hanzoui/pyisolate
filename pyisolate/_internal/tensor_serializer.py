@@ -7,8 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import torch
-import torch.multiprocessing.reductions as reductions
+from .torch_gate import require_torch
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +97,7 @@ class TensorKeeper:
         self._keeper: collections.deque = collections.deque()
         self._lock = threading.Lock()
 
-    def keep(self, t: torch.Tensor) -> None:
+    def keep(self, t: Any) -> None:
         now = time.time()
         with self._lock:
             self._keeper.append((now, t))
@@ -119,19 +118,22 @@ class TensorKeeper:
 _tensor_keeper = TensorKeeper()
 
 
-def serialize_tensor(t: torch.Tensor) -> dict[str, Any]:
+def serialize_tensor(t: Any) -> dict[str, Any]:
     """Serialize a tensor to JSON-compatible format using shared memory."""
+    torch, _ = require_torch("serialize_tensor")
     if t.is_cuda:
         return _serialize_cuda_tensor(t)
     return _serialize_cpu_tensor(t)
 
 
-def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
+def _serialize_cpu_tensor(t: Any) -> dict[str, Any]:
     """Serialize CPU tensor using file_system shared memory strategy.
 
     Falls back gracefully if /dev/shm is unavailable, though performance
     may be reduced.
     """
+    torch, reductions = require_torch("CPU tensor serialization")
+
     # Check /dev/shm availability (cached after first check)
     _check_shm_availability()
 
@@ -184,8 +186,9 @@ def _serialize_cpu_tensor(t: torch.Tensor) -> dict[str, Any]:
         raise RuntimeError(f"Unsupported storage reduction: {sfunc.__name__}")
 
 
-def _serialize_cuda_tensor(t: torch.Tensor) -> dict[str, Any]:
+def _serialize_cuda_tensor(t: Any) -> dict[str, Any]:
     """Serialize CUDA tensor using CUDA IPC."""
+    _, reductions = require_torch("CUDA tensor serialization")
     try:
         func, args = reductions.reduce_tensor(t)
     except RuntimeError as e:
@@ -237,8 +240,9 @@ def _serialize_cuda_tensor(t: torch.Tensor) -> dict[str, Any]:
     }
 
 
-def deserialize_tensor(data: dict[str, Any]) -> torch.Tensor:
+def deserialize_tensor(data: dict[str, Any]) -> Any:
     """Deserialize a tensor from TensorRef format."""
+    torch, _ = require_torch("deserialize_tensor")
     # If this is already a tensor (e.g., passed through by shared memory), return as-is
     if isinstance(data, torch.Tensor):
         return data
@@ -255,8 +259,9 @@ def _convert_lists_to_tuples(obj: Any) -> Any:
     return obj
 
 
-def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
+def _deserialize_legacy_tensor(data: dict[str, Any]) -> Any:
     """Handle legacy TensorRef format for backward compatibility."""
+    torch, reductions = require_torch("legacy tensor deserialization")
     device = data["device"]
     dtype_str = data["dtype"]
     dtype = getattr(torch, dtype_str.split(".")[-1])
@@ -285,7 +290,7 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
             tuple(data["tensor_stride"]),
             data["requires_grad"],
         )
-        cpu_tensor: torch.Tensor = reductions.rebuild_tensor(  # type: ignore[assignment]
+        cpu_tensor: Any = reductions.rebuild_tensor(  # type: ignore[assignment]
             torch.Tensor, typed_storage, metadata
         )
         return cpu_tensor
@@ -296,7 +301,7 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
         event_handle = base64.b64decode(data["event_handle"]) if data["event_handle"] else None
         device_idx = data.get("device_idx", 0)  # int device index
 
-        cuda_tensor: torch.Tensor = reductions.rebuild_cuda_tensor(  # type: ignore[assignment]
+        cuda_tensor: Any = reductions.rebuild_cuda_tensor(  # type: ignore[assignment]
             torch.Tensor,
             tuple(data["tensor_size"]),
             tuple(data["tensor_stride"]),
@@ -319,6 +324,7 @@ def _deserialize_legacy_tensor(data: dict[str, Any]) -> torch.Tensor:
 
 
 def register_tensor_serializer(registry: Any) -> None:
+    require_torch("register_tensor_serializer")
     # Register both "Tensor" (type name) and "torch.Tensor" (full name) just in case
     registry.register("Tensor", serialize_tensor, deserialize_tensor)
     registry.register("torch.Tensor", serialize_tensor, deserialize_tensor)

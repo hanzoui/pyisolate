@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from ..config import ExtensionConfig
 
 from .tensor_serializer import register_tensor_serializer
+from .torch_gate import get_torch_optional
 
 logger = logging.getLogger(__name__)
 
@@ -141,15 +142,18 @@ async def _async_uds_entrypoint(
     rpc = AsyncRPC(transport=transport)
     set_child_rpc_instance(rpc)
 
-    # Register tensor serializer
-    from .serialization_registry import SerializerRegistry
+    torch, _ = get_torch_optional()
+    if torch is not None:
+        # Register tensor serializer only when torch is available.
+        from .serialization_registry import SerializerRegistry
 
-    register_tensor_serializer(SerializerRegistry.get_instance())
-
-    # Ensure file_system strategy for CPU tensors
-    import torch
-
-    torch.multiprocessing.set_sharing_strategy("file_system")
+        register_tensor_serializer(SerializerRegistry.get_instance())
+        # Ensure file_system strategy for CPU tensors.
+        torch.multiprocessing.set_sharing_strategy("file_system")
+    elif config.get("share_torch", False):
+        raise RuntimeError(
+            "share_torch=True requires PyTorch. Install 'torch' to use tensor-sharing features."
+        )
 
     # Instantiate extension
     extension = extension_type()
@@ -164,8 +168,7 @@ async def _async_uds_entrypoint(
     # Set up torch inference mode if share_torch enabled
     context: ContextManager[Any] = nullcontext()
     if config.get("share_torch", False):
-        import torch
-
+        assert torch is not None
         context = cast(ContextManager[Any], torch.inference_mode())
 
     if not os.path.isdir(module_path):

@@ -11,6 +11,9 @@ pyisolate enables you to run Python extensions with conflicting dependencies in 
 - Python 3.9+
 - The [`uv`](https://github.com/astral-sh/uv) CLI available on your `PATH`
 - `pip`/`venv` for bootstrapping the development environment
+- PyTorch is optional and only required for tensor-sharing features (for example, `share_torch=True`)
+
+If you want tensor-sharing features, install PyTorch separately (for example: `pip install torch`).
 
 ## Environment Variables
 

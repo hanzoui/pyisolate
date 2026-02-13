@@ -16,9 +16,8 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any
 
-import torch
-
 from .serialization_registry import SerializerRegistry
+from .torch_gate import get_torch_optional
 
 _cuda_ipc_enabled = sys.platform == "linux" and os.environ.get("PYISOLATE_ENABLE_CUDA_IPC") == "1"
 
@@ -55,7 +54,8 @@ def serialize_for_isolation(data: Any) -> Any:
         if serializer:
             return serializer(data)
 
-    if isinstance(data, torch.Tensor):
+    torch, _ = get_torch_optional()
+    if torch is not None and isinstance(data, torch.Tensor):
         if data.is_cuda:
             if _cuda_ipc_enabled:
                 return data
