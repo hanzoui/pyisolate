@@ -85,6 +85,13 @@ class ReferenceHost:
         self.venv_root = self.root_dir / "venvs"
         self.venv_root.mkdir(parents=True, exist_ok=True)
 
+        # Keep a stable uv cache across ephemeral harness dirs so large torch
+        # dependency sets are reused instead of repeatedly downloaded.
+        shared_uv_cache = Path(tempfile.gettempdir()) / "pyisolate_uv_cache_shared"
+        shared_uv_cache.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("PYISOLATE_UV_CACHE_DIR", str(shared_uv_cache))
+        os.environ.setdefault("UV_HTTP_TIMEOUT", "180")
+
         self.extensions: list[Extension[TestExtensionProtocol]] = []
         self._adapter_registered = False
 

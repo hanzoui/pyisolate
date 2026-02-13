@@ -296,8 +296,9 @@ def install_dependencies(venv_path: Path, config: ExtensionConfig, name: str) ->
 
     # uv handles hardlink vs copy automatically based on filesystem support
     cmd_prefix: list[str] = [uv_path, "pip", "install", "--python", str(python_exe)]
-    cache_dir = venv_path.parent / ".uv_cache"
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir_override = os.environ.get("PYISOLATE_UV_CACHE_DIR")
+    cache_dir = Path(cache_dir_override) if cache_dir_override else (venv_path.parent / ".uv_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
     common_args: list[str] = ["--cache-dir", str(cache_dir)]
 
     torch_spec: str | None = None
