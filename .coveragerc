@@ -1,0 +1,12 @@
+[run]
+parallel = True
+sigterm = True
+source = .
+omit = 
+    tests/*
+    .venv/*
+branch = True
+
+[report]
+show_missing = True
+skip_covered = False

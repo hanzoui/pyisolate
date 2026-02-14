@@ -1,0 +1,152 @@
+name: Build Wheels
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-wheels-${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke-test:
+    name: Smoke Test Built Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-ubuntu-latest-py3.11
+          path: artifacts
+
+      - name: Install wheel and run smoke test
+        shell: bash
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+
+          wheel_path="$(find artifacts -type f -name '*.whl' | head -n 1)"
+          if [ -z "$wheel_path" ]; then
+            echo "No wheel artifact found."
+            exit 1
+          fi
+          python -m pip install "$wheel_path"
+
+          sdist_path="$(find artifacts -type f -name '*.tar.gz' | head -n 1)"
+          if [ -z "$sdist_path" ]; then
+            echo "No sdist artifact found."
+            exit 1
+          fi
+
+          temp_dir="$(mktemp -d)"
+          cd "$temp_dir"
+          python -c "import pyisolate; print(pyisolate.__version__)"
+
+  publish:
+    name: Publish To PyPI (Trusted Publishing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build, smoke-test]
+    if: >-
+      github.repository == 'Comfy-Org/pyisolate' &&
+      github.event_name == 'release' &&
+      github.event.action == 'published' &&
+      github.event.release.tag_name != '' &&
+      startsWith(github.event.release.tag_name, 'v')
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: publish-pypi-${{ github.event.release.tag_name }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: false
+          path: downloaded
+
+      - name: Collect distributions
+        shell: bash
+        run: |
+          mkdir -p dist
+          find downloaded -type f \( -name "*.whl" -o -name "*.tar.gz" \) -print0 | while IFS= read -r -d '' src; do
+            base="$(basename "$src")"
+            dest="dist/$base"
+            if [ -e "$dest" ]; then
+              # Deduplicate byte-identical files produced in multiple matrix legs.
+              if cmp -s "$src" "$dest"; then
+                continue
+              fi
+              echo "Conflicting distribution filename with different content: $base"
+              exit 1
+            fi
+            cp "$src" "$dest"
+          done
+
+          wheel_count="$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)"
+          if [ "$wheel_count" -eq 0 ] || [ "$sdist_count" -eq 0 ]; then
+            echo "Expected at least one wheel and one sdist for publish."
+            exit 1
+          fi
+
+          ls -l dist
+
+      - name: Publish to PyPI via OIDC
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

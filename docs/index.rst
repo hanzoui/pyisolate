@@ -10,6 +10,10 @@ pyisolate Documentation
    :caption: Contents:
 
    api
+   rpc_protocol
+   debugging
+   edge_cases
+   platform_compatibility
 
 Overview
 --------

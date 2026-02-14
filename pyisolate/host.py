@@ -1,18 +1,17 @@
-"""
-Host implementation module for pyisolate.
+"""Host-side ExtensionManager for PyIsolate.
 
-This module contains the ExtensionManager class, which is the main entry point
-for managing extensions across multiple virtual environments. The ExtensionManager
-handles the lifecycle of extensions including creation, isolation, dependency
-installation, and RPC communication setup.
+Manages isolated virtual environments, dependency installation, and RPC lifecycle
+for extensions loaded into separate processes.
 """
 
 import logging
-from typing import Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 from ._internal.host import Extension
 from .config import ExtensionConfig, ExtensionManagerConfig
 from .shared import ExtensionBase, ExtensionLocal
+
+__all__ = ["ExtensionManager", "ExtensionBase", "ExtensionConfig", "ExtensionManagerConfig"]
 
 logger = logging.getLogger(__name__)
 
@@ -20,182 +19,69 @@ T = TypeVar("T", bound=ExtensionBase)
 
 
 class ExtensionManager(Generic[T]):
-    """Manager for loading and managing extensions in isolated environments.
-
-    The ExtensionManager is the primary interface for working with pyisolate.
-    It handles the creation of virtual environments, installation of dependencies,
-    and lifecycle management of extensions. Each extension can run in its own
-    isolated environment with specific dependencies, or share the host environment.
-
-    Type Parameters:
-        T: The base type of extensions this manager will handle. Must be a subclass
-            of ExtensionBase.
-
-    Attributes:
-        config: The manager configuration containing settings like venv root path.
-        extensions: Dictionary mapping extension names to their Extension instances.
-        extension_type: The base extension class type for all managed extensions.
-
-    Example:
-        >>> import asyncio
-        >>> from pyisolate import ExtensionManager, ExtensionManagerConfig, ExtensionConfig
-        >>>
-        >>> async def main():
-        ...     # Create manager configuration
-        ...     manager_config = ExtensionManagerConfig(
-        ...         venv_root_path="./my-extensions"
-        ...     )
-        ...
-        ...     # Create manager for a specific extension type
-        ...     manager = ExtensionManager(MyExtensionBase, manager_config)
-        ...
-        ...     # Load an extension
-        ...     ext_config = ExtensionConfig(
-        ...         name="processor",
-        ...         module_path="./extensions/processor",
-        ...         isolated=True,
-        ...         dependencies=["numpy>=1.26.0"],
-        ...         apis=[],
-        ...         share_torch=False
-        ...     )
-        ...     extension = manager.load_extension(ext_config)
-        ...
-        ...     # Use the extension
-        ...     result = await extension.process([1, 2, 3, 4, 5])
-        ...     print(result)
-        ...
-        ...     # Clean up
-        ...     await extension.stop()
-        >>>
-        >>> asyncio.run(main())
-    """
+    """Manager for loading and supervising isolated extensions."""
 
     def __init__(self, extension_type: type[T], config: ExtensionManagerConfig) -> None:
         """Initialize the ExtensionManager.
 
         Args:
-            extension_type: The base class that all extensions managed by this
-                manager should inherit from. This is used for type checking and
-                to ensure extensions have the correct interface.
-            config: Configuration for the manager, including the root path for
-                virtual environments.
-
-        Raises:
-            ValueError: If the venv_root_path in config is invalid or not writable.
+            extension_type: Base class that all managed extensions inherit from.
+            config: Manager configuration (e.g., root path for virtualenvs).
         """
         self.config = config
-        self.extensions: dict[str, Extension] = {}
+        self.extensions: dict[str, Extension[T]] = {}
         self.extension_type = extension_type
 
     def load_extension(self, config: ExtensionConfig) -> T:
-        """Load an extension with the specified configuration.
+        """Load an extension with the given configuration.
 
-        This method creates a new extension instance, sets up its virtual environment
-        (if isolated), installs dependencies, and establishes RPC communication.
-        The returned object is a proxy that forwards method calls to the extension
-        running in its separate process.
-
-        Args:
-            config: Configuration for the extension, including name, module path,
-                dependencies, and isolation settings.
-
-        Returns:
-            A proxy object that implements the extension interface. All async method
-            calls on this object are forwarded to the actual extension via RPC.
-
-        Raises:
-            ValueError: If an extension with the same name is already loaded, or if
-                the extension name or dependencies contain invalid characters.
-            FileNotFoundError: If the module_path doesn't exist.
-            subprocess.CalledProcessError: If dependency installation fails.
-            ImportError: If the extension module cannot be imported.
-
-        Example:
-            >>> config = ExtensionConfig(
-            ...     name="data_processor",
-            ...     module_path="./extensions/processor",
-            ...     isolated=True,
-            ...     dependencies=["pandas>=2.0.0"],
-            ...     apis=[DatabaseAPI],
-            ...     share_torch=False
-            ... )
-            >>> extension = manager.load_extension(config)
-            >>> # Now you can call methods on the extension
-            >>> result = await extension.process_data(my_data)
-
-        Note:
-            The extension process starts immediately upon loading. To stop the
-            extension and clean up resources, call the `stop()` method on the
-            returned proxy object.
+        Creates the venv (if isolated), installs dependencies, starts the child
+        process, and returns a proxy that forwards calls to the isolated extension.
         """
-        extension = Extension(
+        name = config["name"]
+        if name in self.extensions:
+            raise ValueError(f"Extension '{name}' is already loaded")
+
+        extension: Extension[T] = Extension(
             module_path=config["module_path"],
             extension_type=self.extension_type,
             config=config,
             venv_root_path=self.config["venv_root_path"],
         )
-        self.extensions[config["name"]] = extension
-        proxy = extension.get_proxy()
+
+        self.extensions[name] = extension
 
         class HostExtension(ExtensionLocal):
-            """Proxy class for the extension to provide a consistent interface.
-
-            This internal class wraps the RPC proxy to provide the same interface
-            as ExtensionBase, making remote extensions indistinguishable from
-            local ones from the host's perspective.
-            """
-
-            def __init__(self, rpc, proxy, extension) -> None:
+            def __init__(self, extension_instance: Extension[T]) -> None:
                 super().__init__()
-                self.proxy = proxy
-                self._extension = extension
+                self._extension = extension_instance
+                self._proxy: Any = None
 
-            def __getattr__(self, item: str):
-                """Delegate attribute access to the extension's proxy object.
+            @property
+            def proxy(self) -> Any:
+                # Invalidate cached proxy if process was stopped and needs restart
+                if self._proxy is not None and not self._extension._process_initialized:
+                    self._proxy = None
 
-                This allows the host to call any method defined on the extension
-                as if it were a local object.
-                """
+                if self._proxy is None:
+                    if hasattr(self._extension, "ensure_process_started"):
+                        self._extension.ensure_process_started()
+                    self._proxy = self._extension.get_proxy()
+                    self._initialize_rpc(self._extension.rpc)
+                return self._proxy
+
+            def __getattr__(self, item: str) -> Any:
+                if hasattr(self._extension, item):
+                    return getattr(self._extension, item)
                 return getattr(self.proxy, item)
 
-        host_extension = HostExtension(extension.rpc, proxy, extension)
-        host_extension._initialize_rpc(extension.rpc)
-
-        return cast(T, host_extension)
-
-    def stop_extension(self, name: str) -> None:
-        """Stop a specific extension by name.
-
-        Args:
-            name: The name of the extension to stop (as provided in ExtensionConfig).
-
-        Raises:
-            KeyError: If no extension with the given name is loaded.
-        """
-        if name not in self.extensions:
-            raise KeyError(f"No extension named '{name}' is loaded")
-
-        try:
-            logger.debug(f"Stopping extension: {name}")
-            self.extensions[name].stop()
-            # Remove from our tracking after successful stop
-            del self.extensions[name]
-        except Exception as e:
-            logger.error(f"Error stopping extension {name}: {e}")
-            raise
+        return cast(T, HostExtension(extension))
 
     def stop_all_extensions(self) -> None:
-        """Stop all loaded extensions and clean up resources.
-
-        This method stops all extension processes that were loaded by this manager,
-        cleaning up their virtual environments and RPC connections. It's recommended
-        to call this method before shutting down the application to ensure clean
-        termination of all extension processes.
-        """
+        """Stop all managed extensions and clean up resources."""
         for name, extension in self.extensions.items():
             try:
-                logger.debug(f"Stopping extension: {name}")
                 extension.stop()
             except Exception as e:
-                logger.error(f"Error stopping extension {name}: {e}")
+                logger.error(f"Error stopping extension '{name}': {e}")
         self.extensions.clear()

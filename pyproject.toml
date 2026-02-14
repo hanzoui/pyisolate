@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyisolate"
-version = "0.1.0"
+version = "0.9.0"
 description = "A Python library for dividing execution across multiple virtual environments"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Jacob Segal", email = "jacob.e.segal@gmail.com"},
@@ -20,13 +20,15 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 keywords = ["virtual environment", "venv", "development"]
-dependencies = []
+dependencies = [
+    "uv>=0.1.0",
+    "tomli>=2.0.1; python_version < '3.11'",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -37,6 +39,7 @@ dev = [
     "pre-commit>=3.0",
     "ruff>=0.11.0",
     "pyyaml>=5.4.0",  # Only for test manifest creation
+    "importlib-metadata>=4.0.0",  # For type checking
 ]
 test = [
     "numpy>=1.26.0,<2.0.0",  # For testing share_torch functionality
@@ -97,14 +100,20 @@ select = [
     "PIE",  # flake8-pie
     "SIM",  # flake8-simplify
 ]
-ignore = ["T201", "S101"]  # Allow print statements and assert statements
+# T201: print statements allowed
+# S101: assert allowed
+# S108: /tmp usage is intentional for IPC sockets
+# S110: try-except-pass for graceful degradation in serialization
+# S306: mktemp used for UDS socket paths (race-safe via bind)
+# S603: subprocess.Popen required for child process spawning
+ignore = ["T201", "S101", "S108", "S110", "S306", "S603"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -113,6 +122,10 @@ disallow_untyped_defs = true
 minversion = "6.0"
 addopts = "-ra -q --cov=pyisolate --cov-report=html --cov-report=term-missing"
 testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:The pynvml package is deprecated:FutureWarning",
+]
 
 [tool.coverage.run]
 source = ["pyisolate"]
