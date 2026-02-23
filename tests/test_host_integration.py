@@ -35,7 +35,7 @@ def test_build_extension_snapshot_includes_adapter(monkeypatch):
 
     assert "sys_path" in snapshot
     assert snapshot["adapter_name"] == "fake"
-    assert snapshot["preferred_root"].endswith("Hanzo Studio")
+    assert snapshot["preferred_root"].endswith("HanzoStudio")
     assert snapshot.get("additional_paths")
     assert snapshot.get("context_data", {}).get("module_path") == "/tmp/HanzoStudio/custom_nodes/demo"
 

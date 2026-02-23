@@ -97,7 +97,7 @@ class TestBuildChildSysPath:
         """If comfy_root provided and not in host_paths, prepend it."""
         host = ["/host/lib1", "/host/lib2"]
         extras = ["/venv/lib"]
-        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio")
 
         result = build_child_sys_path(host, extras, comfy_root)
 
@@ -106,7 +106,7 @@ class TestBuildChildSysPath:
 
     def test_does_not_duplicate_comfy_root_if_present(self):
         """If comfy_root already in host_paths, don't duplicate it."""
-        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio")
         host = [comfy_root, "/host/lib1"]
         extras = ["/venv/lib"]
 
@@ -118,7 +118,7 @@ class TestBuildChildSysPath:
 
     def test_removes_comfy_subdirectories_when_root_specified(self):
         """Subdirectories of comfy_root should be filtered to avoid shadowing."""
-        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio")
         host = [f"{comfy_root}/comfy", f"{comfy_root}/app", "/host/lib"]
         extras = ["/venv/lib"]
 
@@ -134,7 +134,7 @@ class TestBuildChildSysPath:
 
     def test_preserves_venv_site_packages_under_comfy_root(self):
         """Hanzo Studio .venv site-packages should NOT be filtered out."""
-        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
+        comfy_root = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio")
         venv_site = f"{comfy_root}/.venv/lib/python3.12/site-packages"
         host = [f"{comfy_root}/comfy", venv_site, "/host/lib"]
         extras = []
@@ -231,11 +231,11 @@ class TestIntegration:
             child_path = build_child_sys_path(
                 snapshot["sys_path"],
                 extras,
-                preferred_root=os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio"),
+                preferred_root=os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio"),
             )
 
             # Verify structure - check that preferred_root is present
-            preferred = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
+            preferred = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio")
             assert preferred in child_path
             assert str(fake_venv) in child_path
             # Note: child_path may be shorter than snapshot["sys_path"] due to filtering of code subdirs

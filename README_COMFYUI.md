@@ -99,7 +99,7 @@ Import times for custom nodes:
    0.0 seconds: /path/to/HanzoStudio/custom_nodes/hanzo-studio-videohelpersuite
    0.0 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-GGUF
    0.0 seconds: /path/to/HanzoStudio/custom_nodes/hanzo-studio-kjnodes
-   0.0 seconds: /path/to/HanzoStudio/custom_nodes/Hanzo Manager
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/ComfyUI-Manager
    0.1 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-Crystools
    0.3 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-WanVideoWrapper
    0.4 seconds: /path/to/HanzoStudio/custom_nodes/RES4LYF

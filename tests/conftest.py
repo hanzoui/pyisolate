@@ -16,7 +16,7 @@ from pyisolate._internal.singleton_context import singleton_scope
 
 # Add Hanzo Studio to sys.path BEFORE any tests run
 # This is required because pyisolate is now HanzoStudio-integrated
-COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
+COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "HanzoStudio")
 if COMFYUI_ROOT not in sys.path:
     sys.path.insert(0, COMFYUI_ROOT)
 
