@@ -185,9 +185,9 @@ class MockHostAdapter(IsolationAdapter):
             and paths to custom_nodes, comfy, etc.::
 
                 {
-                    "preferred_root": "/home/user/Hanzo Studio",
+                    "preferred_root": "/home/user/HanzoStudio",
                     "additional_paths": [
-                        "/home/user/Hanzo Studio/custom_nodes",
+                        "/home/user/HanzoStudio/custom_nodes",
                     ]
                 }
         """

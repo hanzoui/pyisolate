@@ -81,43 +81,43 @@ python main.py --use-process-isolation
 **Expected logs - Loading:**
 PyIsolate and internal functions that use it use a "][" as log prefix. 
 ```
-][ Hanzo Studio-IsolationTest cache miss, spawning process for metadata  # First run or cache invalidation
-][ Hanzo Studio-PyIsolatedV3 loaded from cache                           # Subsequent runs where nodes and environment is unchanged so cache is reused
-][ Hanzo Studio-APIsolated loaded from cache
-][ Hanzo Studio-DepthAnythingV2 loaded from cache
+][ HanzoStudio-IsolationTest cache miss, spawning process for metadata  # First run or cache invalidation
+][ HanzoStudio-PyIsolatedV3 loaded from cache                           # Subsequent runs where nodes and environment is unchanged so cache is reused
+][ HanzoStudio-APIsolated loaded from cache
+][ HanzoStudio-DepthAnythingV2 loaded from cache
 
-][ Hanzo Studio-IsolationTest metadata cached
-][ Hanzo Studio-IsolationTest ejecting after metadata extraction
+][ HanzoStudio-IsolationTest metadata cached
+][ HanzoStudio-IsolationTest ejecting after metadata extraction
 ```
 
 
 **Expected logs - Reporting:**
 ```
 Import times for custom nodes:
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/websocket_image_save.py
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/hanzo-studio-florence2
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/hanzo-studio-videohelpersuite
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-GGUF
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/hanzo-studio-kjnodes
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Manager
-   0.1 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-Crystools
-   0.3 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-WanVideoWrapper
-   0.4 seconds: /path/to/Hanzo Studio/custom_nodes/RES4LYF
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/websocket_image_save.py
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/hanzo-studio-florence2
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/hanzo-studio-videohelpersuite
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-GGUF
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/hanzo-studio-kjnodes
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/Hanzo Manager
+   0.1 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-Crystools
+   0.3 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-WanVideoWrapper
+   0.4 seconds: /path/to/HanzoStudio/custom_nodes/RES4LYF
 
 
 Import times for isolated custom nodes:
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-DepthAnythingV2
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-PyIsolatedV3
-   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-APIsolated
-   3.2 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-IsolationTest     #First-time cost
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-DepthAnythingV2
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-PyIsolatedV3
+   0.0 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-APIsolated
+   3.2 seconds: /path/to/HanzoStudio/custom_nodes/HanzoStudio-IsolationTest     #First-time cost
 ```
 
 
 **Expected logs - during workflow usage:**
 ```
 got prompt  # A new workflow where isolated nodes are used
-][ Hanzo Studio-PyIsolatedV3 - just-in-time spawning of isolated custom_node
-][ Hanzo Studio-APIsolated - just-in-time spawning of isolated custom_node
+][ HanzoStudio-PyIsolatedV3 - just-in-time spawning of isolated custom_node
+][ HanzoStudio-APIsolated - just-in-time spawning of isolated custom_node
 Prompt executed in 68.34 seconds
 
 got prompt  # same workflow
@@ -130,8 +130,8 @@ got prompt  # same 2nd workflow as above
 Prompt executed in 66.17 seconds
 
 got prompt   # new workflow, no isolated nodes used
-][ Hanzo Studio-APIsolated isolated custom_node not in execution graph, evicting
-][ Hanzo Studio-PyIsolatedV3 isolated custom_node not in execution graph, evicting
+][ HanzoStudio-APIsolated isolated custom_node not in execution graph, evicting
+][ HanzoStudio-PyIsolatedV3 isolated custom_node not in execution graph, evicting
 Prompt executed in 8.49 seconds
 
 ```
@@ -260,9 +260,9 @@ Three working isolated custom node packs are available for reference:
 
 | Node Pack | What It Does | Isolation Benefit |
 |-----------|--------------|-------------------|
-| [Hanzo Studio-PyIsolatedV3](https://github.com/pollockjj/Hanzo Studio-PyIsolated) | Demo node using `deepdiff` | Shows basic isolation setup |
-| [Hanzo Studio-APIsolated](https://github.com/pollockjj/Hanzo Studio-APIsolated) | API nodes (OpenAI, Gemini, etc.) | Isolated API dependencies |
-| [Hanzo Studio-IsolationTest](https://github.com/pollockjj/Hanzo Studio-IsolationTest) | 70+ Hanzo Studio core nodes | Proves isolation doesn't break functionality |
+| [HanzoStudio-PyIsolatedV3](https://github.com/pollockjj/HanzoStudio-PyIsolated) | Demo node using `deepdiff` | Shows basic isolation setup |
+| [HanzoStudio-APIsolated](https://github.com/pollockjj/HanzoStudio-APIsolated) | API nodes (OpenAI, Gemini, etc.) | Isolated API dependencies |
+| [HanzoStudio-IsolationTest](https://github.com/pollockjj/HanzoStudio-IsolationTest) | 70+ Hanzo Studio core nodes | Proves isolation doesn't break functionality |
 
 
 

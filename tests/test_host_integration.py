@@ -4,7 +4,7 @@ from pyisolate._internal import host
 class FakeAdapter:
     identifier = "fake"
 
-    def __init__(self, preferred_root="/tmp/Hanzo Studio"):
+    def __init__(self, preferred_root="/tmp/HanzoStudio"):
         self.preferred_root = preferred_root
 
     def get_path_config(self, module_path):
@@ -31,13 +31,13 @@ def test_build_extension_snapshot_includes_adapter(monkeypatch):
 
     monkeypatch.setattr(AdapterRegistry, "get", lambda: FakeAdapter())
 
-    snapshot = host.build_extension_snapshot("/tmp/Hanzo Studio/custom_nodes/demo")
+    snapshot = host.build_extension_snapshot("/tmp/HanzoStudio/custom_nodes/demo")
 
     assert "sys_path" in snapshot
     assert snapshot["adapter_name"] == "fake"
     assert snapshot["preferred_root"].endswith("Hanzo Studio")
     assert snapshot.get("additional_paths")
-    assert snapshot.get("context_data", {}).get("module_path") == "/tmp/Hanzo Studio/custom_nodes/demo"
+    assert snapshot.get("context_data", {}).get("module_path") == "/tmp/HanzoStudio/custom_nodes/demo"
 
 
 def test_build_extension_snapshot_no_adapter(monkeypatch):
