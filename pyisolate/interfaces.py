@@ -1,7 +1,7 @@
 """Public adapter and registry protocols for PyIsolate plugins.
 
 These interfaces define the contract between PyIsolate core and application-
-specific adapters (e.g., ComfyUI). They enable structural typing so adapters can
+specific adapters (e.g., Hanzo Studio). They enable structural typing so adapters can
 be implemented without inheriting from concrete base classes.
 """
 

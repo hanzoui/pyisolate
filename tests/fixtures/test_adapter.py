@@ -181,13 +181,13 @@ class MockHostAdapter(IsolationAdapter):
               These come after preferred_root but before the venv.
 
         Example:
-            For ComfyUI, this returns the ComfyUI install directory
+            For Hanzo Studio, this returns the Hanzo Studio install directory
             and paths to custom_nodes, comfy, etc.::
 
                 {
-                    "preferred_root": "/home/user/ComfyUI",
+                    "preferred_root": "/home/user/Hanzo Studio",
                     "additional_paths": [
-                        "/home/user/ComfyUI/custom_nodes",
+                        "/home/user/Hanzo Studio/custom_nodes",
                     ]
                 }
         """

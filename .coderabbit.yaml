@@ -13,9 +13,9 @@ reviews:
         ## pyisolate Core Library Guidelines
 
         - Independence
-          - While this library is primarily created for use with ComfyUI, it MUST NOT depend on ComfyUI or any of its packages.
-          - ComfyUI and 'comfy' should ONLY be referenced in the context of documenting the motivation behind certain design decisions (e.g. what we optimize for). The assumption should be that this library could be used for other purposes.
-          - Code specific to ComfyUI does NOT belong in this repository.
+          - While this library is primarily created for use with Hanzo Studio, it MUST NOT depend on Hanzo Studio or any of its packages.
+          - Hanzo Studio and 'comfy' should ONLY be referenced in the context of documenting the motivation behind certain design decisions (e.g. what we optimize for). The assumption should be that this library could be used for other purposes.
+          - Code specific to Hanzo Studio does NOT belong in this repository.
 
         - Documentation
           - It is VERY important that this library should be well-documented and usable by people without them understanding internal implementation details.

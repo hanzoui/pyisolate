@@ -239,7 +239,7 @@ def build_bwrap_command(
     pyisolate_path = Path(pyisolate_pkg.__file__).parent.parent.resolve()
     cmd.extend(["--ro-bind", str(pyisolate_path), str(pyisolate_path)])
 
-    # 3. ComfyUI package path: READ-ONLY (needed for comfy.isolation.adapter)
+    # 3. Hanzo Studio package path: READ-ONLY (needed for comfy.isolation.adapter)
     try:
         import comfy  # type: ignore[import]
 
@@ -278,7 +278,7 @@ def build_bwrap_command(
     # ---------------------------------------------------------------------------
 
     # 1. Writable paths from config (user-specified)
-    # Placed here so they can punch holes in RO binds (e.g. ComfyUI/temp inside RO ComfyUI)
+    # Placed here so they can punch holes in RO binds (e.g. Hanzo Studio/temp inside RO Hanzo Studio)
     for path in sandbox_config.get("writable_paths", []):
         if os.path.exists(path):
             cmd.extend(["--bind", path, path])

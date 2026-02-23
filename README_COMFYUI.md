@@ -1,12 +1,12 @@
-# PyIsolate for ComfyUI Custom Nodes
+# PyIsolate for Hanzo Studio Custom Nodes
 
-**Process isolation for ComfyUI custom nodes - solve dependency conflicts without breaking your workflow.**
+**Process isolation for Hanzo Studio custom nodes - solve dependency conflicts without breaking your workflow.**
 
 > 🎯 **Quick Start**: Get your custom node isolated in under 5 minutes. See [Installation](#installation) and [Converting Your Node](#converting-your-custom-node).
 
 ## What Problem Does This Solve?
 
-ComfyUI custom nodes often require conflicting dependencies:
+Hanzo Studio custom nodes often require conflicting dependencies:
 - Node A needs `numpy==1.24.0`
 - Node B needs `numpy==2.0.0`
 - Both can't coexist in the same environment
@@ -17,7 +17,7 @@ ComfyUI custom nodes often require conflicting dependencies:
 
 ### Prerequisites
 - Python 3.9+
-- ComfyUI installed
+- Hanzo Studio installed
 - The [`uv`](https://github.com/astral-sh/uv) package manager
 
 ### Install uv (if not already installed)
@@ -29,10 +29,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### Install PyIsolate in ComfyUI
+### Install PyIsolate in Hanzo Studio
 
 ```bash
-cd ComfyUI
+cd Hanzo Studio
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 Clone from pollockjj's repo:
@@ -42,15 +42,15 @@ git install .
 
 ```
 
-### Enable Isolation in ComfyUI
+### Enable Isolation in Hanzo Studio
 
-Add the `--use-process-isolation` flag when launching ComfyUI:
+Add the `--use-process-isolation` flag when launching Hanzo Studio:
 
 ```bash
 python main.py --use-process-isolation
 ```
 
-**That's it.** ComfyUI will now automatically detect and isolate any custom nodes with a `pyisolate.yaml` manifest.
+**That's it.** Hanzo Studio will now automatically detect and isolate any custom nodes with a `pyisolate.yaml` manifest.
 
 ---
 
@@ -74,50 +74,50 @@ dependencies:
 ### Step 2: Test It
 
 ```bash
-cd ComfyUI
+cd Hanzo Studio
 python main.py --use-process-isolation
 ```
 
 **Expected logs - Loading:**
 PyIsolate and internal functions that use it use a "][" as log prefix. 
 ```
-][ ComfyUI-IsolationTest cache miss, spawning process for metadata  # First run or cache invalidation
-][ ComfyUI-PyIsolatedV3 loaded from cache                           # Subsequent runs where nodes and environment is unchanged so cache is reused
-][ ComfyUI-APIsolated loaded from cache
-][ ComfyUI-DepthAnythingV2 loaded from cache
+][ Hanzo Studio-IsolationTest cache miss, spawning process for metadata  # First run or cache invalidation
+][ Hanzo Studio-PyIsolatedV3 loaded from cache                           # Subsequent runs where nodes and environment is unchanged so cache is reused
+][ Hanzo Studio-APIsolated loaded from cache
+][ Hanzo Studio-DepthAnythingV2 loaded from cache
 
-][ ComfyUI-IsolationTest metadata cached
-][ ComfyUI-IsolationTest ejecting after metadata extraction
+][ Hanzo Studio-IsolationTest metadata cached
+][ Hanzo Studio-IsolationTest ejecting after metadata extraction
 ```
 
 
 **Expected logs - Reporting:**
 ```
 Import times for custom nodes:
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/websocket_image_save.py
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/comfyui-florence2
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/comfyui-videohelpersuite
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-GGUF
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/comfyui-kjnodes
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-Manager
-   0.1 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-Crystools
-   0.3 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-WanVideoWrapper
-   0.4 seconds: /path/to/ComfyUI/custom_nodes/RES4LYF
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/websocket_image_save.py
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/hanzo-studio-florence2
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/hanzo-studio-videohelpersuite
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-GGUF
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/hanzo-studio-kjnodes
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Manager
+   0.1 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-Crystools
+   0.3 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-WanVideoWrapper
+   0.4 seconds: /path/to/Hanzo Studio/custom_nodes/RES4LYF
 
 
 Import times for isolated custom nodes:
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-DepthAnythingV2
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-PyIsolatedV3
-   0.0 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-APIsolated
-   3.2 seconds: /path/to/ComfyUI/custom_nodes/ComfyUI-IsolationTest     #First-time cost
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-DepthAnythingV2
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-PyIsolatedV3
+   0.0 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-APIsolated
+   3.2 seconds: /path/to/Hanzo Studio/custom_nodes/Hanzo Studio-IsolationTest     #First-time cost
 ```
 
 
 **Expected logs - during workflow usage:**
 ```
 got prompt  # A new workflow where isolated nodes are used
-][ ComfyUI-PyIsolatedV3 - just-in-time spawning of isolated custom_node
-][ ComfyUI-APIsolated - just-in-time spawning of isolated custom_node
+][ Hanzo Studio-PyIsolatedV3 - just-in-time spawning of isolated custom_node
+][ Hanzo Studio-APIsolated - just-in-time spawning of isolated custom_node
 Prompt executed in 68.34 seconds
 
 got prompt  # same workflow
@@ -130,8 +130,8 @@ got prompt  # same 2nd workflow as above
 Prompt executed in 66.17 seconds
 
 got prompt   # new workflow, no isolated nodes used
-][ ComfyUI-APIsolated isolated custom_node not in execution graph, evicting
-][ ComfyUI-PyIsolatedV3 isolated custom_node not in execution graph, evicting
+][ Hanzo Studio-APIsolated isolated custom_node not in execution graph, evicting
+][ Hanzo Studio-PyIsolatedV3 isolated custom_node not in execution graph, evicting
 Prompt executed in 8.49 seconds
 
 ```
@@ -147,7 +147,7 @@ Prompt executed in 8.49 seconds
 - ~1ms overhead per RPC call
 - No memory duplication
 
-✅ **ComfyUI V3 API support - at least one node tested with (`comfy_api.latest`):**
+✅ **Hanzo Studio V3 API support - at least one node tested with (`comfy_api.latest`):**
    ### Core
    - io.ComfyNode
    - io.NodeOutput
@@ -201,12 +201,12 @@ Prompt executed in 8.49 seconds
 
 See [Appendix: Supported APIs](#appendix-supported-apis) for complete function lists.
 
-✅ **ComfyUI core proxies (fully supported):**
+✅ **Hanzo Studio core proxies (fully supported):**
 - `model_management.py` - Device management, memory operations, interrupt handling
 - `folder_paths.py` - Path resolution, model discovery, file operations
 - All functions callable from isolated nodes via transparent RPC
 
-✅ **ComfyUI standard V1 types that work across isolation:**
+✅ **Hanzo Studio standard V1 types that work across isolation:**
 
 | Input/Output Type | Status | Notes |
 |-------------------|--------|-------|
@@ -223,7 +223,7 @@ See [Appendix: Supported APIs](#appendix-supported-apis) for complete function l
 | `CLIP` | ⚠️ Basic | standard CLIP decoding tested isolated |
 | `VAE` | ⚠️ Basic | standard VAE decoding tested isolated |
 
-**Key insight:** Any ComfyUI type that is fundamentally a **tensor, dict, list, or primitive** will work. Complex stateful objects like `MODEL`, `CLIP`, `VAE` cannot cross the isolation boundary (yet).
+**Key insight:** Any Hanzo Studio type that is fundamentally a **tensor, dict, list, or primitive** will work. Complex stateful objects like `MODEL`, `CLIP`, `VAE` cannot cross the isolation boundary (yet).
 
 ✅ **Dependency conflicts of isolated custom_nodes**
 - Different numpy versions, diffusers, etc. 
@@ -243,13 +243,13 @@ def my_handler(request):
 **Why**: Route decorators execute at module import time, before isolation is ready.  
 **Workaround**: Use `route_manifest.json` (see [Advanced: Web Routes](#advanced-web-routes)).
 
-❌ **Monkey patching ComfyUI core:**
+❌ **Monkey patching Hanzo Studio core:**
 ```python
 # This will NEVER work in isolation
 import comfy.model_management
 comfy.model_management.some_function = my_patched_version
 ```
-**Why**: Each isolated process has its own copy of ComfyUI code. Patches don't propagate.  
+**Why**: Each isolated process has its own copy of Hanzo Studio code. Patches don't propagate.  
 **Solution**: Don't monkey patch. Use proper extension patterns instead.
 
 ---
@@ -260,9 +260,9 @@ Three working isolated custom node packs are available for reference:
 
 | Node Pack | What It Does | Isolation Benefit |
 |-----------|--------------|-------------------|
-| [ComfyUI-PyIsolatedV3](https://github.com/pollockjj/ComfyUI-PyIsolated) | Demo node using `deepdiff` | Shows basic isolation setup |
-| [ComfyUI-APIsolated](https://github.com/pollockjj/ComfyUI-APIsolated) | API nodes (OpenAI, Gemini, etc.) | Isolated API dependencies |
-| [ComfyUI-IsolationTest](https://github.com/pollockjj/ComfyUI-IsolationTest) | 70+ ComfyUI core nodes | Proves isolation doesn't break functionality |
+| [Hanzo Studio-PyIsolatedV3](https://github.com/pollockjj/Hanzo Studio-PyIsolated) | Demo node using `deepdiff` | Shows basic isolation setup |
+| [Hanzo Studio-APIsolated](https://github.com/pollockjj/Hanzo Studio-APIsolated) | API nodes (OpenAI, Gemini, etc.) | Isolated API dependencies |
+| [Hanzo Studio-IsolationTest](https://github.com/pollockjj/Hanzo Studio-IsolationTest) | 70+ Hanzo Studio core nodes | Proves isolation doesn't break functionality |
 
 
 
@@ -307,5 +307,5 @@ Three working isolated custom node packs are available for reference:
 **Fix:** Check logs for specific error, review the node's `__init__.py` for module-level side effects.
 
 ### "Torch already imported" warning spam
-**Cause:** Isolated processes reload torch, triggering ComfyUI's warning.
+**Cause:** Isolated processes reload torch, triggering Hanzo Studio's warning.
 **Fix:** Known issue

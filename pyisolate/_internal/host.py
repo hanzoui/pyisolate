@@ -176,7 +176,7 @@ class Extension(Generic[T]):
 
         if os.name == "nt":
             # On Windows, Manager().Queue() spawns a process that re-imports __main__,
-            # causing issues when __main__ is ComfyUI's main.py. Use a simple queue
+            # causing issues when __main__ is Hanzo Studio's main.py. Use a simple queue
             # from the threading module instead - logs go to stdout anyway.
             import queue
 
@@ -398,7 +398,7 @@ class Extension(Generic[T]):
                     venv_path=str(self.venv_path),
                     uds_address=ipc_address,
                     sandbox_config=cast(dict[str, Any], sandbox_config),
-                    allow_gpu=True,  # Default to allowing GPU for ComfyUI nodes
+                    allow_gpu=True,  # Default to allowing GPU for Hanzo Studio nodes
                     restriction_model=cap.restriction_model,
                     env_overrides=self.config.get("env"),
                 )

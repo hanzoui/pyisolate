@@ -2,7 +2,7 @@
 
 **Run Python extensions in isolated virtual environments with seamless inter-process communication.**
 
-> 🚨 **Fail Loud Policy**: pyisolate assumes the rest of ComfyUI core is correct. Missing prerequisites or runtime failures immediately raise descriptive exceptions instead of being silently ignored.
+> 🚨 **Fail Loud Policy**: pyisolate assumes the rest of Hanzo Studio core is correct. Missing prerequisites or runtime failures immediately raise descriptive exceptions instead of being silently ignored.
 
 pyisolate enables you to run Python extensions with conflicting dependencies in the same application by automatically creating isolated virtual environments for each extension using `uv`. Extensions communicate with the host process through a transparent RPC system, making the isolation invisible to your code while keeping the host environment dependency-free.
 
@@ -22,7 +22,7 @@ PyIsolate uses several environment variables for configuration and debugging:
 ### Core Variables (Set by PyIsolate automatically)
 - **`PYISOLATE_CHILD`**: Set to `"1"` in isolated child processes. Used to detect if code is running in host or child.
 - **`PYISOLATE_HOST_SNAPSHOT`**: Path to JSON file containing the host's `sys.path` and environment variables. Used during child process initialization.
-- **`PYISOLATE_MODULE_PATH`**: Path to the extension module being loaded. Used to detect ComfyUI root directory.
+- **`PYISOLATE_MODULE_PATH`**: Path to the extension module being loaded. Used to detect Hanzo Studio root directory.
 
 ### Debug Variables (Set by user)
 - **`PYISOLATE_PATH_DEBUG`**: Set to `"1"` to enable detailed sys.path logging during child process initialization. Useful for debugging import issues.
@@ -314,7 +314,7 @@ This structure ensures that:
 
 ## Implementing a Host Adapter (IsolationAdapter)
 
-When integrating pyisolate with your application (like ComfyUI), you implement the `IsolationAdapter` protocol. This tells pyisolate how to configure isolated processes for your environment.
+When integrating pyisolate with your application (like Hanzo Studio), you implement the `IsolationAdapter` protocol. This tells pyisolate how to configure isolated processes for your environment.
 
 ### Reference Implementation
 

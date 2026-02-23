@@ -99,7 +99,7 @@ jobs:
     timeout-minutes: 10
     needs: [build, smoke-test]
     if: >-
-      github.repository == 'Comfy-Org/pyisolate' &&
+      github.repository == 'hanzoui/pyisolate' &&
       github.event_name == 'release' &&
       github.event.action == 'published' &&
       github.event.release.tag_name != '' &&

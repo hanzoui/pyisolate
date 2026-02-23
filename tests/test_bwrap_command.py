@@ -24,8 +24,8 @@ def _mockbuild_bwrap_command(**kwargs: Any) -> list[str]:
     mock_pyisolate = MagicMock()
     mock_pyisolate.__file__ = "/fake/pyisolate/__init__.py"
 
-    # Mock comfy package to raise ImportError (not in ComfyUI context)
-    # This simulates running outside ComfyUI
+    # Mock comfy package to raise ImportError (not in Hanzo Studio context)
+    # This simulates running outside Hanzo Studio
     import builtins
 
     original_import = builtins.__import__

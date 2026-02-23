@@ -67,9 +67,9 @@ docs = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/Comfy-Org/pyisolate"
-"Bug Reports" = "https://github.com/Comfy-Org/pyisolate/issues"
-"Source" = "https://github.com/Comfy-Org/pyisolate"
+"Homepage" = "https://github.com/hanzoui/pyisolate"
+"Bug Reports" = "https://github.com/hanzoui/pyisolate/issues"
+"Source" = "https://github.com/hanzoui/pyisolate"
 
 [project.scripts]
 # TODO: Add any console scripts/entry points

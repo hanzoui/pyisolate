@@ -14,13 +14,13 @@ import pytest
 
 from pyisolate._internal.singleton_context import singleton_scope
 
-# Add ComfyUI to sys.path BEFORE any tests run
-# This is required because pyisolate is now ComfyUI-integrated
-COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "ComfyUI")
+# Add Hanzo Studio to sys.path BEFORE any tests run
+# This is required because pyisolate is now Hanzo Studio-integrated
+COMFYUI_ROOT = os.environ.get("COMFYUI_ROOT") or str(Path.home() / "Hanzo Studio")
 if COMFYUI_ROOT not in sys.path:
     sys.path.insert(0, COMFYUI_ROOT)
 
-# Set environment variable so child processes know ComfyUI location
+# Set environment variable so child processes know Hanzo Studio location
 os.environ.setdefault("COMFYUI_ROOT", COMFYUI_ROOT)
 
 
